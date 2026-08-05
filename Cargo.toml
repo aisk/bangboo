@@ -1,0 +1,25 @@
+[package]
+name = "bangboo"
+version = "0.1.0"
+edition = "2024"
+description = "A truly synchronous HTTP/1.1 client with a reqwest-like blocking API"
+license = "MIT OR Apache-2.0"
+
+[features]
+default = ["tls"]
+tls = ["dep:rustls", "dep:webpki-roots"]
+
+[dependencies]
+base64 = "0.22"
+bytes = "1"
+http = "1"
+serde = "1"
+serde_json = "1"
+serde_urlencoded = "0.7"
+url = "2"
+
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"], optional = true }
+webpki-roots = { version = "1", optional = true }
+
+[dev-dependencies]
+serde = { version = "1", features = ["derive"] }
