@@ -736,3 +736,28 @@ fn pool_max_idle_zero_disables_reuse() {
     thread::sleep(Duration::from_millis(50));
     assert_eq!(conns.load(Ordering::SeqCst), 2);
 }
+
+#[test]
+fn redirect_302_drops_body_even_for_get() {
+    let addr = server(|mut stream| {
+        let (head, body) = read_request(&mut stream).unwrap();
+        assert!(head.starts_with("GET /a"));
+        assert_eq!(body, b"odd get body");
+        respond(&mut stream, "302 Found", "location: /b\r\n", b"");
+        let (head, _) = read_request(&mut stream).unwrap();
+        assert!(head.starts_with("GET /b"));
+        assert!(
+            !head.to_lowercase().contains("content-length"),
+            "content headers must be stripped: {head}"
+        );
+        respond(&mut stream, "200 OK", "", b"done");
+    });
+
+    let client = bangboo::Client::new();
+    let res = client
+        .get(format!("http://{addr}/a"))
+        .body("odd get body")
+        .send()
+        .unwrap();
+    assert_eq!(res.text().unwrap(), "done");
+}

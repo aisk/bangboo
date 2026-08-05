@@ -381,17 +381,29 @@ impl Client {
                 };
 
                 let received_before = conn.received_bytes();
-                let attempt = (|| -> io::Result<proto::Head> {
+                // On success the bool reports whether the request was fully
+                // written; a response obtained after a broken upload is
+                // still valid, but the connection must not be reused.
+                let attempt = (|| -> io::Result<(proto::Head, bool)> {
                     conn.set_deadline(deadline)?;
-                    proto::write_request(
+                    match proto::write_request(
                         &mut conn,
                         &method,
                         &url,
                         version,
                         &headers,
                         body.as_mut(),
-                    )?;
-                    proto::read_head(&mut conn)
+                    ) {
+                        Ok(()) => proto::read_head(&mut conn).map(|head| (head, true)),
+                        // The server may have replied before aborting our
+                        // upload (e.g. 413); prefer that response over the
+                        // write error.
+                        Err(e) if is_stale_conn_error(&e) => match proto::read_head(&mut conn) {
+                            Ok(head) => Ok((head, false)),
+                            Err(_) => Err(e),
+                        },
+                        Err(e) => Err(e),
+                    }
                 })();
 
                 match attempt {
@@ -410,10 +422,12 @@ impl Client {
                     Err(e) => return Err(crate::error::from_io(e).with_url(url.clone())),
                 }
             };
+            let (head, request_fully_written) = head;
 
             let length = proto::body_length(&method, head.status, &head.headers)
                 .map_err(|e| crate::error::from_io(e).with_url(url.clone()))?;
-            let reusable = proto::can_keep_alive(head.version, &head.headers)
+            let reusable = request_fully_written
+                && proto::can_keep_alive(head.version, &head.headers)
                 && length != BodyLength::CloseDelimited;
             let reuse = reusable.then(|| (self.inner.pool.clone(), key));
 
@@ -437,10 +451,11 @@ impl Client {
                         StatusCode::MOVED_PERMANENTLY
                             | StatusCode::FOUND
                             | StatusCode::SEE_OTHER
-                    ) && method != Method::GET
-                        && method != Method::HEAD;
+                    );
                     if drop_body {
-                        method = Method::GET;
+                        if method != Method::HEAD {
+                            method = Method::GET;
+                        }
                         body = None;
                         for header in &[
                             CONTENT_LENGTH,
