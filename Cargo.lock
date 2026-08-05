@@ -9,6 +9,7 @@ dependencies = [
  "base64",
  "bytes",
  "http",
+ "percent-encoding",
  "rustls",
  "serde",
  "serde_json",

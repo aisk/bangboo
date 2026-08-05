@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use http::header::{
     ACCEPT, AUTHORIZATION, CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_TYPE, COOKIE, HeaderMap,
-    HeaderValue, PROXY_AUTHORIZATION, TRANSFER_ENCODING, USER_AGENT,
+    HeaderName, HeaderValue, PROXY_AUTHORIZATION, TRANSFER_ENCODING, USER_AGENT, WWW_AUTHENTICATE,
 };
 use http::{Method, StatusCode, Version};
 use url::Url;
@@ -15,7 +15,7 @@ use crate::into_url::IntoUrl;
 use crate::pool::{Pool, PoolKey};
 use crate::proto::{self, BodyLength};
 use crate::redirect;
-use crate::request::{Request, RequestBuilder};
+use crate::request::{Request, RequestBuilder, basic_auth_value};
 use crate::response::{BodyReader, Response};
 
 /// The maximum amount of a leftover response body that will be drained to
@@ -314,9 +314,32 @@ impl Client {
             .or(self.inner.timeout)
             .map(|t| Instant::now() + t);
 
+        // HTTP/1.0 servers don't understand chunked framing, so a streaming
+        // body with unknown length must be buffered up front.
+        if version == Version::HTTP_10
+            && let Some(b) = body.as_mut()
+            && b.len().is_none()
+        {
+            b.buffer()?;
+        }
+
         let mut redirects = 0usize;
 
         loop {
+            // Credentials embedded in the URL become an Authorization
+            // header, like reqwest.
+            if !url.username().is_empty() || url.password().is_some() {
+                let username = percent_encoding::percent_decode_str(url.username())
+                    .decode_utf8_lossy()
+                    .into_owned();
+                let password = url
+                    .password()
+                    .map(|p| percent_encoding::percent_decode_str(p).decode_utf8_lossy().into_owned());
+                headers.insert(AUTHORIZATION, basic_auth_value(username, password.as_deref()));
+                let _ = url.set_username("");
+                let _ = url.set_password(None);
+            }
+
             let https = match url.scheme() {
                 "http" => false,
                 "https" => true,
@@ -357,6 +380,7 @@ impl Client {
                     ),
                 };
 
+                let received_before = conn.received_bytes();
                 let attempt = (|| -> io::Result<proto::Head> {
                     conn.set_deadline(deadline)?;
                     proto::write_request(
@@ -372,7 +396,15 @@ impl Client {
 
                 match attempt {
                     Ok(head) => break (conn, head),
-                    Err(e) if pooled && body_replayable && is_stale_conn_error(&e) => {
+                    // Only retry when the server never started responding:
+                    // once any response bytes arrived, the request may have
+                    // been acted upon and must not be replayed.
+                    Err(e)
+                        if pooled
+                            && body_replayable
+                            && is_stale_conn_error(&e)
+                            && conn.received_bytes() == received_before =>
+                    {
                         continue;
                     }
                     Err(e) => return Err(crate::error::from_io(e).with_url(url.clone())),
@@ -398,17 +430,17 @@ impl Client {
                     // be reused.
                     BodyReader::new(conn, length, reuse, deadline).drain(REDIRECT_DRAIN_MAX);
 
-                    let drop_body = match head.status {
-                        StatusCode::SEE_OTHER => true,
-                        StatusCode::MOVED_PERMANENTLY | StatusCode::FOUND => {
-                            method == Method::POST
-                        }
-                        _ => false, // 307/308 keep method and body
-                    };
+                    // Like reqwest: 301/302/303 turn every method except
+                    // HEAD into a body-less GET; 307/308 keep method + body.
+                    let drop_body = matches!(
+                        head.status,
+                        StatusCode::MOVED_PERMANENTLY
+                            | StatusCode::FOUND
+                            | StatusCode::SEE_OTHER
+                    ) && method != Method::GET
+                        && method != Method::HEAD;
                     if drop_body {
-                        if method != Method::HEAD {
-                            method = Method::GET;
-                        }
+                        method = Method::GET;
                         body = None;
                         for header in &[
                             CONTENT_LENGTH,
@@ -431,9 +463,11 @@ impl Client {
                         || next_url.host_str() != url.host_str()
                         || next_url.port_or_known_default() != url.port_or_known_default();
                     if cross_origin {
-                        for header in &[AUTHORIZATION, PROXY_AUTHORIZATION, COOKIE] {
-                            headers.remove(header);
-                        }
+                        headers.remove(AUTHORIZATION);
+                        headers.remove(PROXY_AUTHORIZATION);
+                        headers.remove(COOKIE);
+                        headers.remove(WWW_AUTHENTICATE);
+                        headers.remove(HeaderName::from_static("cookie2"));
                     }
 
                     url = next_url;

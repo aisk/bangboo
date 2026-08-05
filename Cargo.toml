@@ -12,6 +12,7 @@ tls = ["dep:rustls", "dep:webpki-roots"]
 [dependencies]
 base64 = "0.22"
 bytes = "1"
+percent-encoding = "2"
 http = "1"
 serde = "1"
 serde_json = "1"

@@ -169,6 +169,8 @@ impl fmt::Debug for Response {
     }
 }
 
+const MAX_TRAILERS: usize = 128;
+
 enum ChunkPhase {
     Size,
     Data(u64),
@@ -357,19 +359,31 @@ impl Read for BodyReader {
                                 }
                             }
                         }
-                        ChunkPhase::Trailers => loop {
-                            match conn.read_line() {
-                                Ok(line) if line.is_empty() => {
-                                    self.finish();
-                                    return Ok(0);
-                                }
-                                Ok(_) => continue,
-                                Err(e) => {
-                                    self.poison();
-                                    return Err(e);
+                        ChunkPhase::Trailers => {
+                            let mut count = 0usize;
+                            loop {
+                                match conn.read_line() {
+                                    Ok(line) if line.is_empty() => {
+                                        self.finish();
+                                        return Ok(0);
+                                    }
+                                    Ok(_) => {
+                                        count += 1;
+                                        if count > MAX_TRAILERS {
+                                            self.poison();
+                                            return Err(io::Error::new(
+                                                io::ErrorKind::InvalidData,
+                                                "too many chunked trailers",
+                                            ));
+                                        }
+                                    }
+                                    Err(e) => {
+                                        self.poison();
+                                        return Err(e);
+                                    }
                                 }
                             }
-                        },
+                        }
                     }
                 }
                 State::Close => {
@@ -382,7 +396,10 @@ impl Read for BodyReader {
                         Ok(n) => return Ok(n),
                         // Servers often close without a TLS close_notify;
                         // treat that as a clean EOF for close-delimited
-                        // bodies, like other clients do.
+                        // bodies, like other clients do. Trade-off: a
+                        // close-delimited HTTPS body can be silently
+                        // truncated by an attacker resetting the TCP
+                        // connection.
                         Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => {
                             self.poison();
                             return Ok(0);

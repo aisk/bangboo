@@ -12,6 +12,7 @@ use crate::body::{Body, BodyKindMut};
 use crate::connect::Conn;
 
 const MAX_HEADERS: usize = 128;
+const MAX_INFORMATIONAL: usize = 10;
 const CHUNK_BUF_SIZE: usize = 8 * 1024;
 
 pub(crate) struct Head {
@@ -147,6 +148,7 @@ pub(crate) fn host_header(url: &Url) -> String {
 
 /// Reads a response head, skipping any informational (1xx) responses.
 pub(crate) fn read_head(conn: &mut Conn) -> io::Result<Head> {
+    let mut informational = 0usize;
     loop {
         let line = conn.read_line()?;
         let (version, status) = parse_status_line(&line)?;
@@ -182,6 +184,10 @@ pub(crate) fn read_head(conn: &mut Conn) -> io::Result<Head> {
 
         // 1xx responses (e.g. 100 Continue) are interim: keep reading.
         if status.is_informational() && status != StatusCode::SWITCHING_PROTOCOLS {
+            informational += 1;
+            if informational > MAX_INFORMATIONAL {
+                return Err(invalid_data("too many informational (1xx) responses"));
+            }
             continue;
         }
         return Ok(Head {
@@ -222,6 +228,11 @@ pub(crate) fn body_length(
     status: StatusCode,
     headers: &HeaderMap,
 ) -> io::Result<BodyLength> {
+    // After 101 the connection speaks another protocol; treating the body
+    // as close-delimited keeps the socket out of the keep-alive pool.
+    if status == StatusCode::SWITCHING_PROTOCOLS {
+        return Ok(BodyLength::CloseDelimited);
+    }
     if *method == Method::HEAD
         || status.is_informational()
         || status == StatusCode::NO_CONTENT
@@ -240,15 +251,24 @@ pub(crate) fn body_length(
             Ok(BodyLength::CloseDelimited)
         };
     }
-    if let Some(cl) = headers.get(CONTENT_LENGTH) {
-        let len = cl
+    let mut content_length: Option<u64> = None;
+    for value in headers.get_all(CONTENT_LENGTH) {
+        let len = value
             .to_str()
             .ok()
             .and_then(|s| s.trim().parse::<u64>().ok())
             .ok_or_else(|| invalid_data("invalid Content-Length"))?;
-        return Ok(BodyLength::Len(len));
+        // RFC 9112 §6.3: conflicting Content-Length values must be treated
+        // as an error to avoid request/response desync.
+        if content_length.is_some_and(|prev| prev != len) {
+            return Err(invalid_data("conflicting Content-Length headers"));
+        }
+        content_length = Some(len);
     }
-    Ok(BodyLength::CloseDelimited)
+    match content_length {
+        Some(len) => Ok(BodyLength::Len(len)),
+        None => Ok(BodyLength::CloseDelimited),
+    }
 }
 
 /// Whether the connection may be reused for another request after this

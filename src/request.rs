@@ -209,12 +209,8 @@ impl RequestBuilder {
         U: fmt::Display,
         P: fmt::Display,
     {
-        let credentials = match password {
-            Some(password) => format!("{username}:{password}"),
-            None => format!("{username}:"),
-        };
-        let encoded = base64::engine::general_purpose::STANDARD.encode(credentials);
-        self.header_sensitive(AUTHORIZATION, format!("Basic {encoded}"), true)
+        let value = basic_auth_value(username, password.map(|p| p.to_string()).as_deref());
+        self.header_sensitive(AUTHORIZATION, value, true)
     }
 
     /// Enable HTTP bearer authentication.
@@ -382,6 +378,19 @@ fn fmt_request_fields<'a, 'b>(
     f.field("method", &req.method)
         .field("url", &req.url)
         .field("headers", &req.headers)
+}
+
+/// Builds a `Basic` Authorization header value from credentials.
+pub(crate) fn basic_auth_value<U>(username: U, password: Option<&str>) -> HeaderValue
+where
+    U: fmt::Display,
+{
+    let credentials = format!("{username}:{}", password.unwrap_or(""));
+    let encoded = base64::engine::general_purpose::STANDARD.encode(credentials);
+    let mut value = HeaderValue::try_from(format!("Basic {encoded}"))
+        .expect("base64 is always a valid header value");
+    value.set_sensitive(true);
+    value
 }
 
 /// Merge `src` into `dst`, replacing values of headers that already exist

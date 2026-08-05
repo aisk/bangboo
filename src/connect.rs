@@ -57,6 +57,7 @@ pub(crate) struct Conn {
     pos: usize,
     end: usize,
     remote_addr: Option<SocketAddr>,
+    received: u64,
 }
 
 impl Conn {
@@ -67,11 +68,19 @@ impl Conn {
             pos: 0,
             end: 0,
             remote_addr,
+            received: 0,
         }
     }
 
     pub(crate) fn remote_addr(&self) -> Option<SocketAddr> {
         self.remote_addr
+    }
+
+    /// Total bytes ever received on this connection. Used to detect whether
+    /// a failed request attempt had already started receiving a response,
+    /// in which case it must not be retried.
+    pub(crate) fn received_bytes(&self) -> u64 {
+        self.received
     }
 
     /// Applies a deadline to all following socket operations. `None` clears
@@ -83,6 +92,7 @@ impl Conn {
     fn fill(&mut self) -> io::Result<usize> {
         self.pos = 0;
         self.end = self.stream.read(&mut self.buf)?;
+        self.received += self.end as u64;
         Ok(self.end)
     }
 
@@ -156,7 +166,9 @@ impl Read for Conn {
             return Ok(n);
         }
         if out.len() >= self.buf.len() {
-            return self.stream.read(out);
+            let n = self.stream.read(out)?;
+            self.received += n as u64;
+            return Ok(n);
         }
         if self.fill()? == 0 {
             return Ok(0);
@@ -202,7 +214,16 @@ impl Connector {
         port: u16,
         deadline: Option<Instant>,
     ) -> crate::Result<Conn> {
-        let addrs: Vec<SocketAddr> = (host, port)
+        // `Url::host_str()` keeps the brackets around IPv6 literals
+        // (`"[::1]"`), but the resolver and TLS want the bare address.
+        let bare_host = host
+            .strip_prefix('[')
+            .and_then(|h| h.strip_suffix(']'))
+            .unwrap_or(host);
+
+        // NOTE: std's resolver offers no timeout hook, so DNS resolution is
+        // not covered by connect_timeout.
+        let addrs: Vec<SocketAddr> = (bare_host, port)
             .to_socket_addrs()
             .map_err(crate::error::connect)?
             .collect();
@@ -250,8 +271,18 @@ impl Connector {
         let stream = if https {
             #[cfg(feature = "tls")]
             {
-                set_socket_deadline(&tcp, deadline).map_err(crate::error::from_io)?;
-                let name = rustls::pki_types::ServerName::try_from(host.to_string())
+                // The handshake honors connect_timeout in addition to the
+                // overall deadline, matching reqwest where connect covers
+                // TCP + TLS.
+                let handshake_deadline = match (deadline, self.connect_timeout) {
+                    (d, Some(t)) => {
+                        let by_connect = Instant::now() + t;
+                        Some(d.map_or(by_connect, |d| d.min(by_connect)))
+                    }
+                    (d, None) => d,
+                };
+                set_socket_deadline(&tcp, handshake_deadline).map_err(crate::error::from_io)?;
+                let name = rustls::pki_types::ServerName::try_from(bare_host.to_string())
                     .map_err(crate::error::builder)?;
                 let conn = rustls::ClientConnection::new(self.tls.clone(), name)
                     .map_err(crate::error::connect)?;

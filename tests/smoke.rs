@@ -432,3 +432,307 @@ fn close_delimited_body() {
     let res = bangboo::get(format!("http://{addr}/")).unwrap();
     assert_eq!(res.text().unwrap(), "old school body");
 }
+
+#[test]
+fn ipv6_literal_host() {
+    // Skip silently on environments without IPv6 loopback.
+    let listener = match TcpListener::bind("[::1]:0") {
+        Ok(listener) => listener,
+        Err(_) => return,
+    };
+    let addr = listener.local_addr().unwrap();
+    thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        read_request(&mut stream).unwrap();
+        respond(&mut stream, "200 OK", "", b"v6");
+    });
+
+    let res = bangboo::get(format!("http://[::1]:{}/", addr.port())).unwrap();
+    assert_eq!(res.text().unwrap(), "v6");
+}
+
+#[test]
+fn no_retry_after_partial_response() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let hits = Arc::new(AtomicUsize::new(0));
+    let hits_server = hits.clone();
+    let addr = server_loop(move |mut stream| {
+        while read_request(&mut stream).is_some() {
+            let n = hits_server.fetch_add(1, Ordering::SeqCst);
+            if n == 0 {
+                respond(&mut stream, "200 OK", "", b"first");
+            } else {
+                // Partial status line, then abrupt close: the request may
+                // have been acted upon, so the client must NOT retry it.
+                let _ = stream.write_all(b"HTTP/1.1 5");
+                break;
+            }
+        }
+    });
+
+    let client = bangboo::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
+    let url = format!("http://{addr}/pay");
+    assert_eq!(client.post(&url).body("$$$").send().unwrap().text().unwrap(), "first");
+    let err = client.post(&url).body("$$$").send().unwrap_err();
+    assert!(!err.is_timeout(), "unexpected error: {err:?}");
+    thread::sleep(Duration::from_millis(100));
+    assert_eq!(hits.load(Ordering::SeqCst), 2, "request was wrongly retried");
+}
+
+#[test]
+fn retries_stale_pooled_connection() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let conns = Arc::new(AtomicUsize::new(0));
+    let conns_server = conns.clone();
+    // Each connection serves exactly one keep-alive response and then the
+    // server closes it silently; the pooled socket goes stale.
+    let addr = server_loop(move |mut stream| {
+        conns_server.fetch_add(1, Ordering::SeqCst);
+        if read_request(&mut stream).is_some() {
+            respond(&mut stream, "200 OK", "", b"one-shot");
+        }
+    });
+
+    let client = bangboo::Client::new();
+    let url = format!("http://{addr}/");
+    assert_eq!(client.get(&url).send().unwrap().text().unwrap(), "one-shot");
+    thread::sleep(Duration::from_millis(50)); // let the FIN arrive
+    assert_eq!(client.get(&url).send().unwrap().text().unwrap(), "one-shot");
+    assert_eq!(conns.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn redirect_301_converts_put_to_get() {
+    let addr = server(|mut stream| {
+        let (head, _) = read_request(&mut stream).unwrap();
+        assert!(head.starts_with("PUT /old"));
+        respond(&mut stream, "301 Moved Permanently", "location: /new\r\n", b"");
+        let (head, _) = read_request(&mut stream).unwrap();
+        assert!(head.starts_with("GET /new"), "got head: {head}");
+        assert!(
+            !head.to_lowercase().contains("content-length"),
+            "content headers must be stripped: {head}"
+        );
+        respond(&mut stream, "200 OK", "", b"moved");
+    });
+
+    let client = bangboo::Client::new();
+    let res = client
+        .put(format!("http://{addr}/old"))
+        .body("payload")
+        .send()
+        .unwrap();
+    assert_eq!(res.text().unwrap(), "moved");
+}
+
+#[test]
+fn userinfo_in_url_becomes_basic_auth() {
+    let addr = server(|mut stream| {
+        let (head, _) = read_request(&mut stream).unwrap();
+        // base64("user:p@ss") == dXNlcjpwQHNz
+        assert!(
+            head.to_lowercase().contains("authorization: basic dxnlcjpwqhnz"),
+            "got head: {head}"
+        );
+        respond(&mut stream, "200 OK", "", b"ok");
+    });
+
+    let res = bangboo::get(format!("http://user:p%40ss@{addr}/")).unwrap();
+    assert_eq!(res.text().unwrap(), "ok");
+}
+
+#[test]
+fn conflicting_content_length_is_rejected() {
+    let addr = server(|mut stream| {
+        read_request(&mut stream).unwrap();
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 5\r\ncontent-length: 999\r\n\r\nhello")
+            .unwrap();
+    });
+
+    let err = bangboo::get(format!("http://{addr}/")).unwrap_err();
+    assert!(err.is_request(), "unexpected error: {err:?}");
+}
+
+#[test]
+fn interim_100_continue_is_skipped() {
+    let addr = server(|mut stream| {
+        read_request(&mut stream).unwrap();
+        stream
+            .write_all(b"HTTP/1.1 100 Continue\r\n\r\n")
+            .unwrap();
+        respond(&mut stream, "200 OK", "", b"final answer");
+    });
+
+    let res = bangboo::get(format!("http://{addr}/")).unwrap();
+    assert_eq!(res.status(), bangboo::StatusCode::OK);
+    assert_eq!(res.text().unwrap(), "final answer");
+}
+
+#[test]
+fn no_content_204() {
+    let addr = server(|mut stream| {
+        read_request(&mut stream).unwrap();
+        stream
+            .write_all(b"HTTP/1.1 204 No Content\r\n\r\n")
+            .unwrap();
+    });
+
+    let res = bangboo::get(format!("http://{addr}/")).unwrap();
+    assert_eq!(res.status(), bangboo::StatusCode::NO_CONTENT);
+    assert_eq!(res.bytes().unwrap().len(), 0);
+}
+
+#[test]
+fn per_request_timeout_overrides_client_timeout() {
+    let addr = server(|mut stream| {
+        let _ = read_request(&mut stream);
+        thread::sleep(Duration::from_secs(5));
+    });
+
+    let client = bangboo::Client::builder()
+        .timeout(Duration::from_secs(60))
+        .build()
+        .unwrap();
+    let start = std::time::Instant::now();
+    let err = client
+        .get(format!("http://{addr}/"))
+        .timeout(Duration::from_millis(200))
+        .send()
+        .unwrap_err();
+    assert!(err.is_timeout(), "unexpected error: {err:?}");
+    assert!(start.elapsed() < Duration::from_secs(2));
+}
+
+#[test]
+fn sized_reader_body_sends_content_length() {
+    let addr = server(|mut stream| {
+        let (head, body) = read_request(&mut stream).unwrap();
+        assert!(head.to_lowercase().contains("content-length: 11"));
+        assert!(!head.to_lowercase().contains("transfer-encoding"));
+        respond(&mut stream, "200 OK", "", &body);
+    });
+
+    let client = bangboo::Client::new();
+    let res = client
+        .post(format!("http://{addr}/"))
+        .body(bangboo::Body::sized(Cursor::new(b"sized bytes".to_vec()), 11))
+        .send()
+        .unwrap();
+    assert_eq!(res.text().unwrap(), "sized bytes");
+}
+
+#[test]
+fn large_body_roundtrip() {
+    let addr = server(|mut stream| {
+        let (_, body) = read_request(&mut stream).unwrap();
+        respond(&mut stream, "200 OK", "", &body);
+    });
+
+    let payload: Vec<u8> = (0..1024 * 1024u32).map(|i| (i % 251) as u8).collect();
+    let client = bangboo::Client::new();
+    let echoed = client
+        .post(format!("http://{addr}/"))
+        .body(payload.clone())
+        .send()
+        .unwrap()
+        .bytes()
+        .unwrap();
+    assert_eq!(echoed.as_ref(), payload.as_slice());
+}
+
+#[test]
+fn http_1_0_response_not_reused() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let conns = Arc::new(AtomicUsize::new(0));
+    let conns_server = conns.clone();
+    let addr = server_loop(move |mut stream| {
+        conns_server.fetch_add(1, Ordering::SeqCst);
+        if read_request(&mut stream).is_some() {
+            stream
+                .write_all(b"HTTP/1.0 200 OK\r\ncontent-length: 2\r\n\r\nok")
+                .unwrap();
+        }
+    });
+
+    let client = bangboo::Client::new();
+    let url = format!("http://{addr}/");
+    let res = client.get(&url).send().unwrap();
+    assert_eq!(res.version(), bangboo::Version::HTTP_10);
+    assert_eq!(res.text().unwrap(), "ok");
+    // HTTP/1.0 without `Connection: keep-alive` must not be pooled.
+    assert_eq!(client.get(&url).send().unwrap().text().unwrap(), "ok");
+    assert_eq!(conns.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn switching_protocols_connection_not_pooled() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let conns = Arc::new(AtomicUsize::new(0));
+    let conns_server = conns.clone();
+    let addr = server_loop(move |mut stream| {
+        let n = conns_server.fetch_add(1, Ordering::SeqCst);
+        if read_request(&mut stream).is_none() {
+            return;
+        }
+        if n == 0 {
+            stream
+                .write_all(
+                    b"HTTP/1.1 101 Switching Protocols\r\nupgrade: raw\r\nconnection: upgrade\r\n\r\nraw-bytes",
+                )
+                .unwrap();
+        } else {
+            respond(&mut stream, "200 OK", "", b"normal");
+        }
+    });
+
+    let client = bangboo::Client::new();
+    let url = format!("http://{addr}/");
+    let res = client
+        .get(&url)
+        .header("connection", "upgrade")
+        .header("upgrade", "raw")
+        .send()
+        .unwrap();
+    assert_eq!(res.status(), bangboo::StatusCode::SWITCHING_PROTOCOLS);
+    assert_eq!(res.text().unwrap(), "raw-bytes");
+    // The upgraded socket must not serve the next plain HTTP request.
+    assert_eq!(client.get(&url).send().unwrap().text().unwrap(), "normal");
+    assert_eq!(conns.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn pool_max_idle_zero_disables_reuse() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let conns = Arc::new(AtomicUsize::new(0));
+    let conns_server = conns.clone();
+    let addr = server_loop(move |mut stream| {
+        conns_server.fetch_add(1, Ordering::SeqCst);
+        while read_request(&mut stream).is_some() {
+            respond(&mut stream, "200 OK", "", b"ok");
+        }
+    });
+
+    let client = bangboo::Client::builder()
+        .pool_max_idle_per_host(0)
+        .build()
+        .unwrap();
+    let url = format!("http://{addr}/");
+    client.get(&url).send().unwrap().text().unwrap();
+    client.get(&url).send().unwrap().text().unwrap();
+    thread::sleep(Duration::from_millis(50));
+    assert_eq!(conns.load(Ordering::SeqCst), 2);
+}
