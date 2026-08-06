@@ -20,10 +20,7 @@ enum Kind {
 
 pub(crate) enum BodyKindMut<'a> {
     Bytes(&'a [u8]),
-    Reader {
-        reader: &'a mut (dyn Read + Send),
-        len: Option<u64>,
-    },
+    Reader(&'a mut (dyn Read + Send)),
 }
 
 impl Body {
@@ -94,10 +91,7 @@ impl Body {
     pub(crate) fn kind_mut(&mut self) -> BodyKindMut<'_> {
         match self.kind {
             Kind::Bytes(ref bytes) => BodyKindMut::Bytes(bytes.as_ref()),
-            Kind::Reader(ref mut reader, len) => BodyKindMut::Reader {
-                reader: &mut **reader,
-                len,
-            },
+            Kind::Reader(ref mut reader, _) => BodyKindMut::Reader(&mut **reader),
         }
     }
 

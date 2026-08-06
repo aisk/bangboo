@@ -35,21 +35,77 @@ pub(crate) fn write_request(
         Chunked,
     }
 
-    let framing = match body.as_deref() {
-        None => {
-            // Methods that conventionally carry a body get an explicit
-            // `Content-Length: 0` so servers don't respond 411.
-            if matches!(*method, Method::POST | Method::PUT | Method::PATCH) {
-                Framing::Len(0)
-            } else {
-                Framing::NoBody
-            }
+    // Framing must stay consistent with any Transfer-Encoding /
+    // Content-Length headers the caller set themselves: sending a framing
+    // that disagrees with those headers desyncs the connection (request
+    // smuggling territory), so conflicts are rejected up front.
+    let user_te = transfer_encoding_tokens(headers)?;
+    let user_len = content_length_value(headers)?;
+    if user_te.is_some() && user_len.is_some() {
+        return Err(invalid_input(
+            "request has both Transfer-Encoding and Content-Length headers",
+        ));
+    }
+    // Even identical repeats would be echoed as multiple header lines,
+    // which RFC 9110 §8.6 forbids generating.
+    if headers.get_all(CONTENT_LENGTH).iter().count() > 1 {
+        return Err(invalid_input("request has repeated Content-Length headers"));
+    }
+
+    let framing = if let Some(tokens) = user_te {
+        // Codings before the final "chunked" (e.g. `gzip, chunked`) are the
+        // caller's responsibility: the body must already be encoded with
+        // them; only the chunked framing is applied here.
+        if tokens.last().map(String::as_str) != Some("chunked")
+            || tokens.iter().filter(|t| *t == "chunked").count() != 1
+        {
+            return Err(invalid_input(
+                "request Transfer-Encoding must end with a single chunked coding",
+            ));
         }
-        Some(b) => match b.len() {
-            Some(len) => Framing::Len(len),
-            None => Framing::Chunked,
-        },
+        Framing::Chunked
+    } else if let Some(user_len) = user_len {
+        match body.as_deref() {
+            None if user_len != 0 => {
+                return Err(invalid_input(
+                    "Content-Length header is set but the request has no body",
+                ));
+            }
+            None => Framing::Len(0),
+            Some(b) => match b.len() {
+                Some(len) if len != user_len => {
+                    return Err(invalid_input(
+                        "Content-Length header does not match the body length",
+                    ));
+                }
+                // For a streaming body of unknown length, the header's value
+                // is trusted as the declared length.
+                _ => Framing::Len(user_len),
+            },
+        }
+    } else {
+        match body.as_deref() {
+            None => {
+                // Methods that conventionally carry a body get an explicit
+                // `Content-Length: 0` so servers don't respond 411.
+                if matches!(*method, Method::POST | Method::PUT | Method::PATCH) {
+                    Framing::Len(0)
+                } else {
+                    Framing::NoBody
+                }
+            }
+            Some(b) => match b.len() {
+                Some(len) => Framing::Len(len),
+                None => Framing::Chunked,
+            },
+        }
     };
+
+    if version == Version::HTTP_10 && matches!(framing, Framing::Chunked) {
+        return Err(invalid_input(
+            "chunked Transfer-Encoding cannot be used with HTTP/1.0",
+        ));
+    }
 
     let mut head = Vec::with_capacity(256);
     head.extend_from_slice(method.as_str().as_bytes());
@@ -94,45 +150,67 @@ pub(crate) fn write_request(
     head.extend_from_slice(b"\r\n");
     conn.write_all(&head)?;
 
-    if let Some(body) = body {
-        match body.kind_mut() {
-            BodyKindMut::Bytes(bytes) => conn.write_all(bytes)?,
-            BodyKindMut::Reader {
-                reader,
-                len: Some(len),
-            } => {
-                let mut taken = reader.take(len);
-                let mut buf = [0u8; CHUNK_BUF_SIZE];
-                let mut copied = 0u64;
-                loop {
-                    let n = taken.read(&mut buf)?;
-                    if n == 0 {
-                        break;
+    // The body is written according to the negotiated framing, not the body
+    // kind: a bytes body must be chunk-encoded when the framing is chunked.
+    match framing {
+        Framing::NoBody => {}
+        Framing::Len(len) => {
+            if let Some(body) = body {
+                match body.kind_mut() {
+                    BodyKindMut::Bytes(bytes) => conn.write_all(bytes)?,
+                    BodyKindMut::Reader(reader) => {
+                        let mut taken = reader.take(len);
+                        let mut buf = [0u8; CHUNK_BUF_SIZE];
+                        let mut copied = 0u64;
+                        loop {
+                            let n = taken.read(&mut buf)?;
+                            if n == 0 {
+                                break;
+                            }
+                            conn.write_all(&buf[..n])?;
+                            copied += n as u64;
+                        }
+                        if copied < len {
+                            return Err(io::Error::new(
+                                io::ErrorKind::WriteZero,
+                                "request body was shorter than its declared Content-Length",
+                            ));
+                        }
                     }
-                    conn.write_all(&buf[..n])?;
-                    copied += n as u64;
-                }
-                if copied < len {
-                    return Err(io::Error::new(
-                        io::ErrorKind::WriteZero,
-                        "request body was shorter than its declared Content-Length",
-                    ));
                 }
             }
-            BodyKindMut::Reader { reader, len: None } => {
+        }
+        Framing::Chunked => match body.map(|b| b.kind_mut()) {
+            Some(BodyKindMut::Bytes(bytes)) => {
+                let mut frame = Vec::with_capacity(bytes.len() + 32);
+                if !bytes.is_empty() {
+                    frame.extend_from_slice(format!("{:x}\r\n", bytes.len()).as_bytes());
+                    frame.extend_from_slice(bytes);
+                    frame.extend_from_slice(b"\r\n");
+                }
+                frame.extend_from_slice(b"0\r\n\r\n");
+                conn.write_all(&frame)?;
+            }
+            Some(BodyKindMut::Reader(reader)) => {
                 let mut buf = [0u8; CHUNK_BUF_SIZE];
+                // Each chunk (size line + data + CRLF) is assembled into one
+                // buffer so it goes out as a single write.
+                let mut frame = Vec::with_capacity(CHUNK_BUF_SIZE + 32);
                 loop {
                     let n = reader.read(&mut buf)?;
                     if n == 0 {
                         break;
                     }
-                    conn.write_all(format!("{n:x}\r\n").as_bytes())?;
-                    conn.write_all(&buf[..n])?;
-                    conn.write_all(b"\r\n")?;
+                    frame.clear();
+                    frame.extend_from_slice(format!("{n:x}\r\n").as_bytes());
+                    frame.extend_from_slice(&buf[..n]);
+                    frame.extend_from_slice(b"\r\n");
+                    conn.write_all(&frame)?;
                 }
                 conn.write_all(b"0\r\n\r\n")?;
             }
-        }
+            None => conn.write_all(b"0\r\n\r\n")?,
+        },
     }
 
     conn.flush()
@@ -226,6 +304,7 @@ pub(crate) enum BodyLength {
 pub(crate) fn body_length(
     method: &Method,
     status: StatusCode,
+    version: Version,
     headers: &HeaderMap,
 ) -> io::Result<BodyLength> {
     // After 101 the connection speaks another protocol; treating the body
@@ -240,17 +319,52 @@ pub(crate) fn body_length(
     {
         return Ok(BodyLength::Empty);
     }
-    if let Some(te) = headers.get(TRANSFER_ENCODING) {
-        let te = te.to_str().map_err(|_| invalid_data("invalid Transfer-Encoding"))?;
-        return if te
-            .split(',')
-            .any(|part| part.trim().eq_ignore_ascii_case("chunked"))
-        {
-            Ok(BodyLength::Chunked)
-        } else {
-            Ok(BodyLength::CloseDelimited)
+    if let Some(tokens) = transfer_encoding_tokens(headers)? {
+        // RFC 9112 §6.1: Transfer-Encoding from an HTTP/1.0 peer has no
+        // defined framing; read until close and don't reuse the connection.
+        if version == Version::HTTP_10 {
+            return Ok(BodyLength::CloseDelimited);
+        }
+        return match tokens.last().map(String::as_str) {
+            Some("chunked") => Ok(BodyLength::Chunked),
+            // chunked anywhere but last leaves the message without a
+            // determinable end; treating it as anything else risks desync.
+            _ if tokens.iter().any(|t| t == "chunked") => {
+                Err(invalid_data("chunked must be the final transfer coding"))
+            }
+            _ => Ok(BodyLength::CloseDelimited),
         };
     }
+    match content_length_value(headers)? {
+        Some(len) => Ok(BodyLength::Len(len)),
+        None => Ok(BodyLength::CloseDelimited),
+    }
+}
+
+/// Collects the transfer-coding tokens from all `Transfer-Encoding` values,
+/// lowercased and in order. Returns `None` if the header is absent.
+fn transfer_encoding_tokens(headers: &HeaderMap) -> io::Result<Option<Vec<String>>> {
+    if !headers.contains_key(TRANSFER_ENCODING) {
+        return Ok(None);
+    }
+    let mut tokens = Vec::new();
+    for value in headers.get_all(TRANSFER_ENCODING) {
+        let value = value
+            .to_str()
+            .map_err(|_| invalid_data("invalid Transfer-Encoding"))?;
+        for part in value.split(',') {
+            let part = part.trim();
+            if !part.is_empty() {
+                tokens.push(part.to_ascii_lowercase());
+            }
+        }
+    }
+    Ok(Some(tokens))
+}
+
+/// Parses the `Content-Length` header(s), treating conflicting values as an
+/// error (RFC 9112 §6.3, avoids request/response desync).
+fn content_length_value(headers: &HeaderMap) -> io::Result<Option<u64>> {
     let mut content_length: Option<u64> = None;
     for value in headers.get_all(CONTENT_LENGTH) {
         let len = value
@@ -258,17 +372,12 @@ pub(crate) fn body_length(
             .ok()
             .and_then(|s| s.trim().parse::<u64>().ok())
             .ok_or_else(|| invalid_data("invalid Content-Length"))?;
-        // RFC 9112 §6.3: conflicting Content-Length values must be treated
-        // as an error to avoid request/response desync.
         if content_length.is_some_and(|prev| prev != len) {
             return Err(invalid_data("conflicting Content-Length headers"));
         }
         content_length = Some(len);
     }
-    match content_length {
-        Some(len) => Ok(BodyLength::Len(len)),
-        None => Ok(BodyLength::CloseDelimited),
-    }
+    Ok(content_length)
 }
 
 /// Whether the connection may be reused for another request after this
@@ -296,11 +405,37 @@ pub(crate) fn can_keep_alive(version: Version, headers: &HeaderMap) -> bool {
 }
 
 pub(crate) fn parse_chunk_size(line: &[u8]) -> io::Result<u64> {
-    let s = std::str::from_utf8(line).map_err(|_| invalid_data("malformed chunk size"))?;
-    let size_part = s.split(';').next().unwrap_or("").trim();
-    u64::from_str_radix(size_part, 16).map_err(|_| invalid_data("malformed chunk size"))
+    // chunk-size = 1*HEXDIG, optionally followed by BWS and a ";ext"
+    // chunk extension. Notably no sign, radix prefix, or leading whitespace.
+    let digits_end = line
+        .iter()
+        .position(|b| !b.is_ascii_hexdigit())
+        .unwrap_or(line.len());
+    if digits_end == 0 {
+        return Err(invalid_data("malformed chunk size"));
+    }
+    let mut rest = &line[digits_end..];
+    while let [b' ' | b'\t', more @ ..] = rest {
+        rest = more;
+    }
+    if !(rest.is_empty() || rest[0] == b';') {
+        return Err(invalid_data("malformed chunk size"));
+    }
+    let mut size = 0u64;
+    for &b in &line[..digits_end] {
+        let digit = (b as char).to_digit(16).expect("checked hexdigit") as u64;
+        size = size
+            .checked_mul(16)
+            .and_then(|s| s.checked_add(digit))
+            .ok_or_else(|| invalid_data("chunk size too large"))?;
+    }
+    Ok(size)
 }
 
 fn invalid_data(msg: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, msg)
+}
+
+fn invalid_input(msg: &'static str) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidInput, msg)
 }

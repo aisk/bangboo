@@ -310,9 +310,11 @@ impl Client {
             }
         }
 
+        // An overflowing deadline (e.g. `timeout(Duration::MAX)`) is treated
+        // as no timeout rather than panicking.
         let deadline = timeout
             .or(self.inner.timeout)
-            .map(|t| Instant::now() + t);
+            .and_then(|t| Instant::now().checked_add(t));
 
         // HTTP/1.0 servers don't understand chunked framing, so a streaming
         // body with unknown length must be buffered up front.
@@ -424,7 +426,7 @@ impl Client {
             };
             let (head, request_fully_written) = head;
 
-            let length = proto::body_length(&method, head.status, &head.headers)
+            let length = proto::body_length(&method, head.status, head.version, &head.headers)
                 .map_err(|e| crate::error::from_io(e).with_url(url.clone()))?;
             let reusable = request_fully_written
                 && proto::can_keep_alive(head.version, &head.headers)
@@ -540,8 +542,15 @@ fn redirect_target(
         Err(e) => return Some(Err(crate::error::redirect(e, base.clone()))),
     };
     match base.join(location) {
-        Ok(url) => match url.scheme() {
-            "http" | "https" => Some(Ok(url)),
+        Ok(mut url) => match url.scheme() {
+            "http" | "https" => {
+                // RFC 9110 §10.2.2: a Location without a fragment inherits
+                // the original URL's fragment.
+                if url.fragment().is_none() && base.fragment().is_some() {
+                    url.set_fragment(base.fragment());
+                }
+                Some(Ok(url))
+            }
             _ => Some(Err(crate::error::redirect(
                 format!("redirect to unsupported scheme: {url}"),
                 base.clone(),

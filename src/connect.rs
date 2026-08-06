@@ -5,6 +5,11 @@ use std::time::{Duration, Instant};
 const READ_BUF_SIZE: usize = 8 * 1024;
 const MAX_LINE_SIZE: usize = 64 * 1024;
 
+/// How stale an armed socket timeout may get before `refresh_deadline`
+/// re-arms it. Bounds deadline overshoot while avoiding two `setsockopt`
+/// calls on every body read.
+const REARM_INTERVAL: Duration = Duration::from_millis(250);
+
 pub(crate) enum Stream {
     Tcp(TcpStream),
     #[cfg(feature = "tls")]
@@ -58,6 +63,8 @@ pub(crate) struct Conn {
     end: usize,
     remote_addr: Option<SocketAddr>,
     received: u64,
+    /// The deadline currently armed on the socket, and when it was armed.
+    armed: Option<(Instant, Instant)>,
 }
 
 impl Conn {
@@ -69,6 +76,7 @@ impl Conn {
             end: 0,
             remote_addr,
             received: 0,
+            armed: None,
         }
     }
 
@@ -85,8 +93,34 @@ impl Conn {
 
     /// Applies a deadline to all following socket operations. `None` clears
     /// any previously set socket timeouts (important for pooled conns).
-    pub(crate) fn set_deadline(&self, deadline: Option<Instant>) -> io::Result<()> {
-        set_socket_deadline(self.stream.tcp(), deadline)
+    pub(crate) fn set_deadline(&mut self, deadline: Option<Instant>) -> io::Result<()> {
+        set_socket_deadline(self.stream.tcp(), deadline)?;
+        self.armed = deadline.map(|d| (Instant::now(), d));
+        Ok(())
+    }
+
+    /// Re-arms the socket timeouts for `deadline`, skipping the syscalls
+    /// when the same deadline was armed within `REARM_INTERVAL` (the socket
+    /// timeout is then at most that much stale).
+    pub(crate) fn refresh_deadline(&mut self, deadline: Instant) -> io::Result<()> {
+        if let Some((at, armed)) = self.armed
+            && armed == deadline
+            && at.elapsed() < REARM_INTERVAL
+        {
+            return Ok(());
+        }
+        self.set_deadline(Some(deadline))
+    }
+
+    /// Number of bytes sitting in the internal read buffer.
+    pub(crate) fn buffered(&self) -> usize {
+        self.end - self.pos
+    }
+
+    /// Discards `n` bytes from the internal read buffer.
+    pub(crate) fn consume_buffered(&mut self, n: usize) {
+        debug_assert!(n <= self.buffered());
+        self.pos += n;
     }
 
     fn fill(&mut self) -> io::Result<usize> {

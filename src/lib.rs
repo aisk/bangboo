@@ -53,6 +53,13 @@
 //! reqwest that are tied to its async internals or to HTTP/2+ (`http2_*`,
 //! `http3_*`, connector layers, etc.) are omitted. Currently not
 //! implemented: proxies, cookies, automatic decompression, and multipart.
+//!
+//! With the `tls` feature (on by default), server certificates are
+//! validated against the bundled Mozilla root set ([`webpki-roots`]);
+//! system/native certificate stores and custom root certificates are not
+//! currently supported, so servers using a private CA will fail to verify.
+//!
+//! [`webpki-roots`]: https://docs.rs/webpki-roots
 
 mod body;
 mod client;

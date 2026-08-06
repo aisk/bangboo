@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -21,7 +21,7 @@ struct Idle {
 pub(crate) struct Pool {
     idle_timeout: Option<Duration>,
     max_idle_per_host: usize,
-    inner: Mutex<HashMap<PoolKey, Vec<Idle>>>,
+    inner: Mutex<HashMap<PoolKey, VecDeque<Idle>>>,
 }
 
 impl Pool {
@@ -37,7 +37,8 @@ impl Pool {
         let mut inner = self.inner.lock().unwrap();
         let list = inner.get_mut(key)?;
         let mut found = None;
-        while let Some(idle) = list.pop() {
+        // Most-recently-used first: it is the most likely to still be alive.
+        while let Some(idle) = list.pop_back() {
             if let Some(timeout) = self.idle_timeout
                 && idle.since.elapsed() > timeout {
                     continue;
@@ -60,9 +61,10 @@ impl Pool {
         let mut inner = self.inner.lock().unwrap();
         let list = inner.entry(key).or_default();
         if list.len() >= self.max_idle_per_host {
-            list.remove(0);
+            // Evict the oldest idle connection.
+            list.pop_front();
         }
-        list.push(Idle {
+        list.push_back(Idle {
             conn,
             since: Instant::now(),
         });

@@ -207,18 +207,24 @@ impl BodyReader {
             BodyLength::Chunked => State::Chunked(ChunkPhase::Size),
             BodyLength::CloseDelimited => State::Close,
         };
-        BodyReader {
+        let mut reader = BodyReader {
             conn: Some(conn),
             state,
             reuse,
             deadline,
+        };
+        // An empty body needs no reads: return the connection to the pool
+        // right away instead of waiting for a read that may never come.
+        if matches!(reader.state, State::Len(0)) {
+            reader.finish();
         }
+        reader
     }
 
     /// Body fully consumed: return the connection to the pool if allowed.
     fn finish(&mut self) {
         self.state = State::Done;
-        if let (Some(conn), Some((pool, key))) = (self.conn.take(), self.reuse.take()) {
+        if let (Some(mut conn), Some((pool, key))) = (self.conn.take(), self.reuse.take()) {
             // Clear per-request socket timeouts before pooling.
             if conn.set_deadline(None).is_ok() {
                 pool.checkin(key, conn);
@@ -236,8 +242,8 @@ impl BodyReader {
     }
 
     fn apply_deadline(&mut self) -> io::Result<()> {
-        if let (Some(conn), Some(deadline)) = (self.conn.as_ref(), self.deadline) {
-            conn.set_deadline(Some(deadline))?;
+        if let (Some(conn), Some(deadline)) = (self.conn.as_mut(), self.deadline) {
+            conn.refresh_deadline(deadline)?;
         }
         Ok(())
     }
@@ -258,6 +264,25 @@ impl BodyReader {
                 }
                 Err(_) => return,
             }
+        }
+    }
+}
+
+impl Drop for BodyReader {
+    fn drop(&mut self) {
+        // If the whole remaining body already sits in the connection's read
+        // buffer (common for small responses whose body arrived with the
+        // head), consume it so the connection can still go back to the pool.
+        // No reads from the socket are performed, so Drop can never block.
+        if self.reuse.is_none() {
+            return;
+        }
+        if let (State::Len(remaining), Some(conn)) = (&self.state, self.conn.as_mut())
+            && *remaining <= conn.buffered() as u64
+        {
+            let remaining = *remaining as usize;
+            conn.consume_buffered(remaining);
+            self.finish();
         }
     }
 }

@@ -738,6 +738,216 @@ fn pool_max_idle_zero_disables_reuse() {
 }
 
 #[test]
+fn user_chunked_transfer_encoding_encodes_bytes_body() {
+    let addr = server(|mut stream| {
+        let (head, body) = read_request(&mut stream).unwrap();
+        let head = head.to_lowercase();
+        assert!(head.contains("transfer-encoding: chunked"), "head: {head}");
+        assert!(!head.contains("content-length"), "head: {head}");
+        respond(&mut stream, "200 OK", "", &body);
+    });
+
+    // A bytes body normally goes out with Content-Length, but an explicit
+    // Transfer-Encoding header must switch the framing to chunked (and
+    // actually chunk-encode the bytes) instead of desyncing the connection.
+    let client = bangboo::Client::new();
+    let res = client
+        .post(format!("http://{addr}/"))
+        .header("transfer-encoding", "chunked")
+        .body("chunk me")
+        .send()
+        .unwrap();
+    assert_eq!(res.text().unwrap(), "chunk me");
+}
+
+#[test]
+fn mismatched_content_length_header_rejected() {
+    let addr = server(|_stream| {});
+
+    let client = bangboo::Client::new();
+    let err = client
+        .post(format!("http://{addr}/"))
+        .header("content-length", "3")
+        .body("longer than three")
+        .send()
+        .unwrap_err();
+    assert!(err.is_request(), "unexpected error: {err:?}");
+}
+
+#[test]
+fn transfer_encoding_and_content_length_headers_rejected() {
+    let addr = server(|_stream| {});
+
+    let client = bangboo::Client::new();
+    let err = client
+        .post(format!("http://{addr}/"))
+        .header("transfer-encoding", "chunked")
+        .header("content-length", "8")
+        .body("smuggle?")
+        .send()
+        .unwrap_err();
+    assert!(err.is_request(), "unexpected error: {err:?}");
+}
+
+#[test]
+fn repeated_content_length_headers_rejected() {
+    // Even identical repeats must not go out as multiple header lines.
+    let addr = server(|_stream| {});
+
+    let client = bangboo::Client::new();
+    let err = client
+        .post(format!("http://{addr}/"))
+        .header("content-length", "4")
+        .header("content-length", "4")
+        .body("four")
+        .send()
+        .unwrap_err();
+    assert!(err.is_request(), "unexpected error: {err:?}");
+}
+
+#[test]
+fn matching_user_content_length_is_honored() {
+    let addr = server(|mut stream| {
+        let (head, body) = read_request(&mut stream).unwrap();
+        // Exactly one content-length header must go out.
+        assert_eq!(head.to_lowercase().matches("content-length").count(), 1);
+        respond(&mut stream, "200 OK", "", &body);
+    });
+
+    let client = bangboo::Client::new();
+    let res = client
+        .post(format!("http://{addr}/"))
+        .header("content-length", "4")
+        .body("four")
+        .send()
+        .unwrap();
+    assert_eq!(res.text().unwrap(), "four");
+}
+
+#[test]
+fn malformed_chunk_size_rejected() {
+    // `+5` parses under from_str_radix but is not a valid chunk-size.
+    let addr = server(|mut stream| {
+        read_request(&mut stream).unwrap();
+        stream
+            .write_all(
+                b"HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n+5\r\nhello\r\n0\r\n\r\n",
+            )
+            .unwrap();
+    });
+
+    let res = bangboo::get(format!("http://{addr}/")).unwrap();
+    let err = res.text().unwrap_err();
+    assert!(err.is_request(), "unexpected error: {err:?}");
+}
+
+#[test]
+fn chunked_not_final_coding_rejected() {
+    let addr = server(|mut stream| {
+        read_request(&mut stream).unwrap();
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\ntransfer-encoding: chunked, gzip\r\n\r\nwhatever")
+            .unwrap();
+    });
+
+    let err = bangboo::get(format!("http://{addr}/")).unwrap_err();
+    assert!(err.is_request(), "unexpected error: {err:?}");
+}
+
+#[test]
+fn http_1_0_transfer_encoding_read_to_close() {
+    // RFC 9112: Transfer-Encoding from an HTTP/1.0 peer has no defined
+    // framing; the body must be read raw until the connection closes.
+    let addr = server(|mut stream| {
+        read_request(&mut stream).unwrap();
+        stream
+            .write_all(b"HTTP/1.0 200 OK\r\ntransfer-encoding: chunked\r\n\r\nnot chunked at all")
+            .unwrap();
+    });
+
+    let res = bangboo::get(format!("http://{addr}/")).unwrap();
+    assert_eq!(res.text().unwrap(), "not chunked at all");
+}
+
+#[test]
+fn empty_body_response_pooled_without_read() {
+    // One connection serving two requests: dropping the 204 response without
+    // reading its (empty) body must still return the socket to the pool.
+    let addr = server(|mut stream| {
+        read_request(&mut stream).unwrap();
+        stream.write_all(b"HTTP/1.1 204 No Content\r\n\r\n").unwrap();
+        read_request(&mut stream).unwrap();
+        respond(&mut stream, "200 OK", "", b"again");
+    });
+
+    let client = bangboo::Client::new();
+    let url = format!("http://{addr}/");
+    let res = client.get(&url).send().unwrap();
+    assert_eq!(res.status(), bangboo::StatusCode::NO_CONTENT);
+    drop(res);
+    assert_eq!(client.get(&url).send().unwrap().text().unwrap(), "again");
+}
+
+#[test]
+fn small_unread_body_pooled_on_drop() {
+    // The body arrives in the same packet as the head, so it is fully
+    // buffered client-side; dropping the response unread should consume it
+    // from the buffer and reuse the connection.
+    let addr = server(|mut stream| {
+        read_request(&mut stream).unwrap();
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nhi")
+            .unwrap();
+        read_request(&mut stream).unwrap();
+        respond(&mut stream, "200 OK", "", b"again");
+    });
+
+    let client = bangboo::Client::new();
+    let url = format!("http://{addr}/");
+    let res = client.get(&url).send().unwrap();
+    assert_eq!(res.status(), bangboo::StatusCode::OK);
+    drop(res);
+    assert_eq!(client.get(&url).send().unwrap().text().unwrap(), "again");
+}
+
+#[test]
+fn redirect_inherits_fragment() {
+    let addr = server(|mut stream| {
+        read_request(&mut stream).unwrap();
+        respond(&mut stream, "302 Found", "location: /next\r\n", b"");
+        read_request(&mut stream).unwrap();
+        respond(&mut stream, "302 Found", "location: /done#other\r\n", b"");
+        read_request(&mut stream).unwrap();
+        respond(&mut stream, "200 OK", "", b"ok");
+    });
+
+    let client = bangboo::Client::new();
+    let res = client
+        .get(format!("http://{addr}/start#frag"))
+        .send()
+        .unwrap();
+    // A Location without a fragment inherits the original fragment; a
+    // Location with its own fragment overrides it.
+    assert_eq!(res.url().fragment(), Some("other"));
+    assert!(res.url().path().ends_with("/done"));
+}
+
+#[test]
+fn huge_timeout_does_not_panic() {
+    let addr = server(|mut stream| {
+        read_request(&mut stream).unwrap();
+        respond(&mut stream, "200 OK", "", b"ok");
+    });
+
+    let client = bangboo::Client::builder()
+        .timeout(Duration::MAX)
+        .build()
+        .unwrap();
+    let res = client.get(format!("http://{addr}/")).send().unwrap();
+    assert_eq!(res.text().unwrap(), "ok");
+}
+
+#[test]
 fn redirect_302_drops_body_even_for_get() {
     let addr = server(|mut stream| {
         let (head, body) = read_request(&mut stream).unwrap();
