@@ -10,13 +10,13 @@ Add it to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-bangboo = "0.1"
+bangboo = "0.2"
 ```
 
 TLS (via rustls) and charset-aware text decoding are enabled by default. To build without them:
 
 ```toml
-bangboo = { version = "0.1", default-features = false }
+bangboo = { version = "0.2", default-features = false }
 ```
 
 ### Features
