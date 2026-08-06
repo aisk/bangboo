@@ -3,7 +3,7 @@ name = "bangboo"
 version = "0.1.0"
 edition = "2024"
 description = "A truly synchronous HTTP/1.1 client with a reqwest-like blocking API"
-license = "MIT OR Apache-2.0"
+license = "MIT"
 
 [features]
 default = ["tls"]
