@@ -112,9 +112,8 @@ pub(crate) fn socks5_handshake(
     match reply[1] {
         0x00 => {}
         0x02 => {
-            let (username, password) = auth.ok_or_else(|| {
-                other("SOCKS5 proxy requires authentication")
-            })?;
+            let (username, password) =
+                auth.ok_or_else(|| other("SOCKS5 proxy requires authentication"))?;
             if username.len() > 255 || password.len() > 255 {
                 return Err(other("SOCKS5 credentials too long"));
             }

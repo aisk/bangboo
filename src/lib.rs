@@ -107,10 +107,10 @@ pub use self::response::Response;
 pub use self::tls::{Certificate, CertificateRevocationList, Identity};
 
 // Re-exports of common types used in the API, mirroring reqwest.
-pub use http::header;
 pub use http::Method;
 pub use http::StatusCode;
 pub use http::Version;
+pub use http::header;
 pub use url::Url;
 
 /// Shortcut method to quickly make a `GET` request.

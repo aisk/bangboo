@@ -27,9 +27,7 @@ impl IntoUrl for Url {
 
 impl IntoUrl for &str {
     fn into_url(self) -> crate::Result<Url> {
-        Url::parse(self)
-            .map_err(crate::error::builder)?
-            .into_url()
+        Url::parse(self).map_err(crate::error::builder)?.into_url()
     }
 }
 

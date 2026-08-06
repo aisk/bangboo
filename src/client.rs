@@ -856,10 +856,15 @@ impl Client {
                 let username = percent_encoding::percent_decode_str(url.username())
                     .decode_utf8_lossy()
                     .into_owned();
-                let password = url
-                    .password()
-                    .map(|p| percent_encoding::percent_decode_str(p).decode_utf8_lossy().into_owned());
-                headers.insert(AUTHORIZATION, basic_auth_value(username, password.as_deref()));
+                let password = url.password().map(|p| {
+                    percent_encoding::percent_decode_str(p)
+                        .decode_utf8_lossy()
+                        .into_owned()
+                });
+                headers.insert(
+                    AUTHORIZATION,
+                    basic_auth_value(username, password.as_deref()),
+                );
                 let _ = url.set_username("");
                 let _ = url.set_password(None);
             }
@@ -904,12 +909,14 @@ impl Client {
                     port,
                     proxy: None,
                 },
-                Some(scheme @ ProxyScheme::Http {
-                    tls,
-                    host: proxy_host,
-                    port: proxy_port,
-                    ..
-                }) if forward => PoolKey {
+                Some(
+                    scheme @ ProxyScheme::Http {
+                        tls,
+                        host: proxy_host,
+                        port: proxy_port,
+                        ..
+                    },
+                ) if forward => PoolKey {
                     // A forwarding connection can serve *any* target, so it
                     // is pooled under the proxy endpoint, not the target.
                     https: *tls,

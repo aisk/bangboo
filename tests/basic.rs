@@ -14,7 +14,10 @@ fn get_text() {
     let addr = server(|mut stream| {
         let (head, _) = read_request(&mut stream).unwrap();
         assert!(head.starts_with("GET /hello?x=1 HTTP/1.1\r\n"));
-        assert!(head.to_lowercase().contains(&format!("host: {}", stream.local_addr().unwrap())));
+        assert!(
+            head.to_lowercase()
+                .contains(&format!("host: {}", stream.local_addr().unwrap()))
+        );
         respond(&mut stream, "200 OK", "x-test: yes\r\n", b"hello world");
     });
 
@@ -111,9 +114,7 @@ fn no_content_204() {
 fn interim_100_continue_is_skipped() {
     let addr = server(|mut stream| {
         read_request(&mut stream).unwrap();
-        stream
-            .write_all(b"HTTP/1.1 100 Continue\r\n\r\n")
-            .unwrap();
+        stream.write_all(b"HTTP/1.1 100 Continue\r\n\r\n").unwrap();
         respond(&mut stream, "200 OK", "", b"final answer");
     });
 

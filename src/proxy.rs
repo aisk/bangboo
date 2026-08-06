@@ -103,13 +103,11 @@ impl ProxyScheme {
         let username = percent_encoding::percent_decode_str(url.username())
             .decode_utf8_lossy()
             .into_owned();
-        let password = url
-            .password()
-            .map(|p| {
-                percent_encoding::percent_decode_str(p)
-                    .decode_utf8_lossy()
-                    .into_owned()
-            });
+        let password = url.password().map(|p| {
+            percent_encoding::percent_decode_str(p)
+                .decode_utf8_lossy()
+                .into_owned()
+        });
         let has_auth = !username.is_empty() || password.is_some();
 
         let scheme = match url.scheme() {
@@ -311,9 +309,7 @@ impl Proxy {
         F: Fn(&Url) -> Option<U> + Send + Sync + 'static,
     {
         Proxy::new(Intercept::Custom(Custom {
-            func: Arc::new(move |url| {
-                fun(url).map(|into| ProxyScheme::parse(into.into_proxy()?))
-            }),
+            func: Arc::new(move |url| fun(url).map(|into| ProxyScheme::parse(into.into_proxy()?))),
         }))
     }
 
@@ -490,7 +486,10 @@ impl NoProxy {
             if self.ips.contains(&ip) {
                 return true;
             }
-            return self.cidrs.iter().any(|&(base, bits)| cidr_match(ip, base, bits));
+            return self
+                .cidrs
+                .iter()
+                .any(|&(base, bits)| cidr_match(ip, base, bits));
         }
         // A fully-qualified name with a trailing dot names the same host.
         let host = host.trim_end_matches('.').to_ascii_lowercase();
@@ -518,9 +517,7 @@ fn cidr_match(ip: IpAddr, base: IpAddr, bits: u8) -> bool {
         (IpAddr::V4(ip), IpAddr::V4(base)) => {
             matches(u32::from(ip) as u128, u32::from(base) as u128, 32, bits)
         }
-        (IpAddr::V6(ip), IpAddr::V6(base)) => {
-            matches(u128::from(ip), u128::from(base), 128, bits)
-        }
+        (IpAddr::V6(ip), IpAddr::V6(base)) => matches(u128::from(ip), u128::from(base), 128, bits),
         _ => false,
     }
 }
@@ -612,7 +609,11 @@ mod tests {
         assert!(no_proxy.contains("example.com."));
         assert!(no_proxy.contains("sub.example.com."));
 
-        assert!(NoProxy::from_string("*").unwrap().contains("anything.at.all"));
+        assert!(
+            NoProxy::from_string("*")
+                .unwrap()
+                .contains("anything.at.all")
+        );
         assert!(NoProxy::from_string("").is_none());
         assert!(NoProxy::from_string(" , ").is_none());
 

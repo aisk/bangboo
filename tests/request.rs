@@ -30,7 +30,10 @@ struct Message {
 fn json_roundtrip() {
     let addr = server(|mut stream| {
         let (head, body) = read_request(&mut stream).unwrap();
-        assert!(head.to_lowercase().contains("content-type: application/json"));
+        assert!(
+            head.to_lowercase()
+                .contains("content-type: application/json")
+        );
         respond(
             &mut stream,
             "200 OK",
@@ -58,9 +61,10 @@ fn json_roundtrip() {
 fn form_body() {
     let addr = server(|mut stream| {
         let (head, body) = read_request(&mut stream).unwrap();
-        assert!(head
-            .to_lowercase()
-            .contains("content-type: application/x-www-form-urlencoded"));
+        assert!(
+            head.to_lowercase()
+                .contains("content-type: application/x-www-form-urlencoded")
+        );
         respond(&mut stream, "200 OK", "", &body);
     });
 
@@ -102,7 +106,8 @@ fn userinfo_in_url_becomes_basic_auth() {
         let (head, _) = read_request(&mut stream).unwrap();
         // base64("user:p@ss") == dXNlcjpwQHNz
         assert!(
-            head.to_lowercase().contains("authorization: basic dxnlcjpwqhnz"),
+            head.to_lowercase()
+                .contains("authorization: basic dxnlcjpwqhnz"),
             "got head: {head}"
         );
         respond(&mut stream, "200 OK", "", b"ok");

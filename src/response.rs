@@ -166,9 +166,10 @@ impl Response {
             .get(http::header::CONTENT_TYPE)
             .and_then(|value| value.to_str().ok())
             .and_then(|value| value.parse::<mime::Mime>().ok());
-        let header_charset = content_type
-            .as_ref()
-            .and_then(|mime| mime.get_param("charset").map(|charset| charset.as_str().to_owned()));
+        let header_charset = content_type.as_ref().and_then(|mime| {
+            mime.get_param("charset")
+                .map(|charset| charset.as_str().to_owned())
+        });
         // An unrecognized charset falls through to the caller's default,
         // and only then to UTF-8.
         let encoding = header_charset

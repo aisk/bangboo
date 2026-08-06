@@ -44,9 +44,10 @@ impl Pool {
         // Most-recently-used first: it is the most likely to still be alive.
         while let Some(idle) = list.pop_back() {
             if let Some(timeout) = self.idle_timeout
-                && idle.since.elapsed() > timeout {
-                    continue;
-                }
+                && idle.since.elapsed() > timeout
+            {
+                continue;
+            }
             if idle.conn.is_reusable_now() {
                 found = Some(idle.conn);
                 break;

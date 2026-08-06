@@ -53,7 +53,10 @@ fn sized_reader_body_sends_content_length() {
     let client = bangboo::Client::new();
     let res = client
         .post(format!("http://{addr}/"))
-        .body(bangboo::Body::sized(Cursor::new(b"sized bytes".to_vec()), 11))
+        .body(bangboo::Body::sized(
+            Cursor::new(b"sized bytes".to_vec()),
+            11,
+        ))
         .send()
         .unwrap();
     assert_eq!(res.text().unwrap(), "sized bytes");

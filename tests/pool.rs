@@ -18,14 +18,25 @@ fn keep_alive_reuse() {
     let addr = server(|mut stream| {
         for i in 0..2 {
             read_request(&mut stream).unwrap();
-            respond(&mut stream, "200 OK", "", format!("response {i}").as_bytes());
+            respond(
+                &mut stream,
+                "200 OK",
+                "",
+                format!("response {i}").as_bytes(),
+            );
         }
     });
 
     let client = bangboo::Client::new();
     let url = format!("http://{addr}/");
-    assert_eq!(client.get(&url).send().unwrap().text().unwrap(), "response 0");
-    assert_eq!(client.get(&url).send().unwrap().text().unwrap(), "response 1");
+    assert_eq!(
+        client.get(&url).send().unwrap().text().unwrap(),
+        "response 0"
+    );
+    assert_eq!(
+        client.get(&url).send().unwrap().text().unwrap(),
+        "response 1"
+    );
 }
 
 #[test]
@@ -72,11 +83,24 @@ fn no_retry_after_partial_response() {
         .build()
         .unwrap();
     let url = format!("http://{addr}/pay");
-    assert_eq!(client.post(&url).body("$$$").send().unwrap().text().unwrap(), "first");
+    assert_eq!(
+        client
+            .post(&url)
+            .body("$$$")
+            .send()
+            .unwrap()
+            .text()
+            .unwrap(),
+        "first"
+    );
     let err = client.post(&url).body("$$$").send().unwrap_err();
     assert!(!err.is_timeout(), "unexpected error: {err:?}");
     thread::sleep(Duration::from_millis(100));
-    assert_eq!(hits.load(Ordering::SeqCst), 2, "request was wrongly retried");
+    assert_eq!(
+        hits.load(Ordering::SeqCst),
+        2,
+        "request was wrongly retried"
+    );
 }
 
 #[test]
@@ -165,7 +189,9 @@ fn empty_body_response_pooled_without_read() {
     // reading its (empty) body must still return the socket to the pool.
     let addr = server(|mut stream| {
         read_request(&mut stream).unwrap();
-        stream.write_all(b"HTTP/1.1 204 No Content\r\n\r\n").unwrap();
+        stream
+            .write_all(b"HTTP/1.1 204 No Content\r\n\r\n")
+            .unwrap();
         read_request(&mut stream).unwrap();
         respond(&mut stream, "200 OK", "", b"again");
     });

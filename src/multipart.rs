@@ -383,8 +383,9 @@ impl Read for FormReader {
                         PartValue::Bytes(bytes) => Box::new(Cursor::new(bytes.into_owned())),
                         PartValue::Reader(reader, _) => reader,
                     };
-                    self.current =
-                        Some(Box::new(head.chain(body).chain(Cursor::new(b"\r\n".to_vec()))));
+                    self.current = Some(Box::new(
+                        head.chain(body).chain(Cursor::new(b"\r\n".to_vec())),
+                    ));
                 }
                 None => return self.tail.read(buf),
             }

@@ -71,9 +71,7 @@ impl Body {
                 } else {
                     Vec::new()
                 };
-                reader
-                    .read_to_end(&mut bytes)
-                    .map_err(crate::error::body)?;
+                reader.read_to_end(&mut bytes).map_err(crate::error::body)?;
                 self.kind = Kind::Bytes(bytes.into());
                 self.buffer()
             }

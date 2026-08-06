@@ -65,7 +65,12 @@ fn redirect_301_converts_put_to_get() {
     let addr = server(|mut stream| {
         let (head, _) = read_request(&mut stream).unwrap();
         assert!(head.starts_with("PUT /old"));
-        respond(&mut stream, "301 Moved Permanently", "location: /new\r\n", b"");
+        respond(
+            &mut stream,
+            "301 Moved Permanently",
+            "location: /new\r\n",
+            b"",
+        );
         let (head, _) = read_request(&mut stream).unwrap();
         assert!(head.starts_with("GET /new"), "got head: {head}");
         assert!(
@@ -195,7 +200,10 @@ fn redirect_sets_referer() {
         assert!(!head.to_lowercase().contains("referer"), "head: {head}");
         respond(&mut stream, "302 Found", "location: /next\r\n", b"");
         let (head, _) = read_request(&mut stream).unwrap();
-        assert!(head.to_lowercase().contains("referer: http://"), "head: {head}");
+        assert!(
+            head.to_lowercase().contains("referer: http://"),
+            "head: {head}"
+        );
         respond(&mut stream, "200 OK", "", b"ok");
     });
 
@@ -221,8 +229,8 @@ fn redirect_referer_disabled() {
 
 #[test]
 fn redirect_limit_allows_exactly_max_hops() {
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     // Three hops then a 200: allowed by limited(3).
     let seen = Arc::new(AtomicUsize::new(0));

@@ -34,7 +34,10 @@ fn http_proxy_sends_auth_and_headers() {
     let addr = server(|mut stream| {
         let (head, _) = read_request(&mut stream).unwrap();
         let lower = head.to_lowercase();
-        assert!(lower.contains("proxy-authorization: basic "), "head: {head}");
+        assert!(
+            lower.contains("proxy-authorization: basic "),
+            "head: {head}"
+        );
         assert!(lower.contains("x-proxy-extra: yes"), "head: {head}");
         respond(&mut stream, "200 OK", "", b"ok");
     });
@@ -72,11 +75,21 @@ fn http_proxy_connection_reused_across_hosts() {
         .build()
         .unwrap();
     assert_eq!(
-        client.get("http://one.invalid/").send().unwrap().text().unwrap(),
+        client
+            .get("http://one.invalid/")
+            .send()
+            .unwrap()
+            .text()
+            .unwrap(),
         "one"
     );
     assert_eq!(
-        client.get("http://two.invalid/").send().unwrap().text().unwrap(),
+        client
+            .get("http://two.invalid/")
+            .send()
+            .unwrap()
+            .text()
+            .unwrap(),
         "two"
     );
 }
@@ -200,7 +213,10 @@ fn socks5_auth() {
 fn custom_proxy_selects_per_url() {
     let addr = server(|mut stream| {
         let (head, _) = read_request(&mut stream).unwrap();
-        assert!(head.starts_with("GET http://picked.invalid/"), "head: {head}");
+        assert!(
+            head.starts_with("GET http://picked.invalid/"),
+            "head: {head}"
+        );
         respond(&mut stream, "200 OK", "", b"custom");
     });
 

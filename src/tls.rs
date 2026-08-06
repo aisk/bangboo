@@ -84,7 +84,9 @@ impl Identity {
             .collect::<Result<_, _>>()
             .map_err(crate::error::builder)?;
         if certs.is_empty() {
-            return Err(crate::error::builder("identity PEM contains no certificate"));
+            return Err(crate::error::builder(
+                "identity PEM contains no certificate",
+            ));
         }
         let key = PrivateKeyDer::from_pem_slice(buf).map_err(crate::error::builder)?;
         Ok(Identity { certs, key })
@@ -97,7 +99,9 @@ impl Identity {
             .collect::<Result<_, _>>()
             .map_err(crate::error::builder)?;
         if certs.is_empty() {
-            return Err(crate::error::builder("identity PEM contains no certificate"));
+            return Err(crate::error::builder(
+                "identity PEM contains no certificate",
+            ));
         }
         let key = PrivateKeyDer::from_pem_slice(key).map_err(crate::error::builder)?;
         Ok(Identity { certs, key })
@@ -340,9 +344,7 @@ pub(crate) mod danger {
     use std::sync::Arc;
 
     use rustls::client::WebPkiServerVerifier;
-    use rustls::client::danger::{
-        HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier,
-    };
+    use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
     use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
     use rustls::{CertificateError, DigitallySignedStruct, SignatureScheme};
 

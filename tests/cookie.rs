@@ -12,10 +12,18 @@ fn cookie_store_round_trip() {
     let addr = server(|mut stream| {
         let (head, _) = read_request(&mut stream).unwrap();
         assert!(!head.to_lowercase().contains("cookie:"), "head: {head}");
-        respond(&mut stream, "200 OK", "set-cookie: id=42; Path=/\r\n", b"set");
+        respond(
+            &mut stream,
+            "200 OK",
+            "set-cookie: id=42; Path=/\r\n",
+            b"set",
+        );
 
         let (head, _) = read_request(&mut stream).unwrap();
-        assert!(head.to_lowercase().contains("cookie: id=42"), "head: {head}");
+        assert!(
+            head.to_lowercase().contains("cookie: id=42"),
+            "head: {head}"
+        );
         respond(&mut stream, "200 OK", "", b"sent");
     });
 
@@ -64,7 +72,10 @@ fn response_cookies_are_readable() {
     assert!(cookies[0].http_only());
     assert!(cookies[0].secure());
     assert_eq!(cookies[0].path(), Some("/x"));
-    assert_eq!(cookies[0].max_age(), Some(std::time::Duration::from_secs(60)));
+    assert_eq!(
+        cookies[0].max_age(),
+        Some(std::time::Duration::from_secs(60))
+    );
     assert_eq!(cookies[1].name(), "b");
     assert!(!cookies[1].http_only());
 }
@@ -73,7 +84,10 @@ fn response_cookies_are_readable() {
 fn custom_cookie_provider() {
     let addr = server(|mut stream| {
         let (head, _) = read_request(&mut stream).unwrap();
-        assert!(head.to_lowercase().contains("cookie: seed=1"), "head: {head}");
+        assert!(
+            head.to_lowercase().contains("cookie: seed=1"),
+            "head: {head}"
+        );
         respond(&mut stream, "200 OK", "", b"ok");
     });
 
@@ -102,7 +116,10 @@ fn cookies_are_recomputed_across_redirects() {
         let (head, _) = read_request(&mut stream).unwrap();
         assert!(head.starts_with("GET /b"), "head: {head}");
         // The cookie set by the 302 is sent on the very next hop.
-        assert!(head.to_lowercase().contains("cookie: hop=1"), "head: {head}");
+        assert!(
+            head.to_lowercase().contains("cookie: hop=1"),
+            "head: {head}"
+        );
         respond(&mut stream, "200 OK", "", b"done");
     });
 

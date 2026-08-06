@@ -37,7 +37,9 @@ fn text_fields() {
 
     let lower = head.to_lowercase();
     assert!(
-        lower.contains(&format!("content-type: multipart/form-data; boundary={boundary}")),
+        lower.contains(&format!(
+            "content-type: multipart/form-data; boundary={boundary}"
+        )),
         "head: {head}"
     );
     // A form of only text parts has a known length, so no chunked framing.
@@ -60,7 +62,10 @@ fn content_length_matches_computed_length() {
     let declared: usize = head
         .to_lowercase()
         .lines()
-        .find_map(|line| line.strip_prefix("content-length:").map(|v| v.trim().to_owned()))
+        .find_map(|line| {
+            line.strip_prefix("content-length:")
+                .map(|v| v.trim().to_owned())
+        })
         .expect("no content-length")
         .parse()
         .unwrap();
@@ -102,10 +107,8 @@ fn unsized_reader_falls_back_to_chunked() {
 
 #[test]
 fn reader_with_length_keeps_content_length() {
-    let part = bangboo::multipart::Part::reader_with_length(
-        std::io::Cursor::new(b"exactly".to_vec()),
-        7,
-    );
+    let part =
+        bangboo::multipart::Part::reader_with_length(std::io::Cursor::new(b"exactly".to_vec()), 7);
     let form = bangboo::multipart::Form::new().part("sized", part);
     let (head, body) = send(form);
 
@@ -125,9 +128,7 @@ fn file_part_guesses_name_and_mime() {
     file.write_all(b"file contents").unwrap();
     drop(file);
 
-    let form = bangboo::multipart::Form::new()
-        .file("doc", &path)
-        .unwrap();
+    let form = bangboo::multipart::Form::new().file("doc", &path).unwrap();
     let (head, body) = send(form);
 
     assert!(

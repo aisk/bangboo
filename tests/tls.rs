@@ -230,8 +230,8 @@ fn tls_connection_with_buffered_plaintext_is_not_pooled() {
 
 #[test]
 fn tls_connections_are_pooled() {
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     let cert = TestCert::generate("bangboo.test");
     let conns = Arc::new(AtomicUsize::new(0));
@@ -246,5 +246,9 @@ fn tls_connections_are_pooled() {
     for _ in 0..3 {
         assert_eq!(client.get(&url).send().unwrap().text().unwrap(), "ok");
     }
-    assert_eq!(conns.load(Ordering::SeqCst), 1, "TLS connection was not reused");
+    assert_eq!(
+        conns.load(Ordering::SeqCst),
+        1,
+        "TLS connection was not reused"
+    );
 }

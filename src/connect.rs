@@ -192,13 +192,12 @@ impl Conn {
     pub(crate) fn read_line(&mut self) -> io::Result<Vec<u8>> {
         let mut line = Vec::new();
         loop {
-            if self.pos == self.end
-                && self.fill()? == 0 {
-                    return Err(io::Error::new(
-                        io::ErrorKind::UnexpectedEof,
-                        "connection closed while reading line",
-                    ));
-                }
+            if self.pos == self.end && self.fill()? == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "connection closed while reading line",
+                ));
+            }
             while self.pos < self.end {
                 let b = self.buf[self.pos];
                 self.pos += 1;
@@ -328,11 +327,8 @@ impl TcpConfig {
     /// connecting with an optional timeout.
     fn connect(&self, addr: &SocketAddr, timeout: Option<Duration>) -> io::Result<TcpStream> {
         let domain = socket2::Domain::for_address(*addr);
-        let socket = socket2::Socket::new(
-            domain,
-            socket2::Type::STREAM,
-            Some(socket2::Protocol::TCP),
-        )?;
+        let socket =
+            socket2::Socket::new(domain, socket2::Type::STREAM, Some(socket2::Protocol::TCP))?;
 
         #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
         if let Some(ref interface) = self.interface {
@@ -419,8 +415,7 @@ impl Connector {
                 let tcp = self.open_tcp(bare_host, port, deadline)?;
                 let remote_addr = tcp.peer_addr().ok();
                 let stream = if https {
-                    set_socket_deadline(&tcp, handshake_deadline)
-                        .map_err(crate::error::from_io)?;
+                    set_socket_deadline(&tcp, handshake_deadline).map_err(crate::error::from_io)?;
                     self.tls_wrap(Stream::Tcp(tcp), bare_host)?
                 } else {
                     Stream::Tcp(tcp)
@@ -450,8 +445,10 @@ impl Connector {
                 // run TLS to the origin inside it.
                 let mut conn = Conn::new(stream, remote_addr, self.tcp.verbose);
                 self.connect_tunnel(&mut conn, host, port, auth.as_ref(), headers)?;
-                let stream = self
-                    .tls_wrap(conn.into_stream().map_err(crate::error::connect)?, bare_host)?;
+                let stream = self.tls_wrap(
+                    conn.into_stream().map_err(crate::error::connect)?,
+                    bare_host,
+                )?;
                 Ok(Conn::new(stream, remote_addr, self.tcp.verbose))
             }
             Some(ProxyScheme::Socks4 {
@@ -603,8 +600,8 @@ impl Connector {
     fn tls_wrap(&self, stream: Stream, name: &str) -> crate::Result<Stream> {
         let name = rustls::pki_types::ServerName::try_from(name.to_string())
             .map_err(crate::error::builder)?;
-        let conn = rustls::ClientConnection::new(self.tls.clone(), name)
-            .map_err(crate::error::connect)?;
+        let conn =
+            rustls::ClientConnection::new(self.tls.clone(), name).map_err(crate::error::connect)?;
         let mut tls = rustls::StreamOwned::new(conn, stream);
         while tls.conn.is_handshaking() {
             tls.conn.complete_io(&mut tls.sock).map_err(|e| {

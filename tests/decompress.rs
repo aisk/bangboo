@@ -206,9 +206,9 @@ fn range_request_skips_accept_encoding() {
 #[cfg(feature = "gzip")]
 #[test]
 fn decoded_body_still_pools_the_connection() {
-    use support::server_loop;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use support::server_loop;
 
     let conns = Arc::new(AtomicUsize::new(0));
     let counter = conns.clone();
@@ -252,8 +252,9 @@ fn empty_bodies_with_content_encoding_are_not_decoded() {
             } else {
                 "204 No Content"
             };
-            let response =
-                format!("HTTP/1.1 {status}\r\ncontent-encoding: gzip\r\ncontent-length: 100\r\n\r\n");
+            let response = format!(
+                "HTTP/1.1 {status}\r\ncontent-encoding: gzip\r\ncontent-length: 100\r\n\r\n"
+            );
             stream.write_all(response.as_bytes()).unwrap();
             stream.flush().unwrap();
         }

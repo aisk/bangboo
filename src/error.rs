@@ -89,9 +89,10 @@ impl Error {
         let mut source = self.source();
         while let Some(err) = source {
             if let Some(io_err) = err.downcast_ref::<io::Error>()
-                && is_timeout_io(io_err) {
-                    return true;
-                }
+                && is_timeout_io(io_err)
+            {
+                return true;
+            }
             source = err.source();
         }
         false
