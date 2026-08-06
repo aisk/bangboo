@@ -139,3 +139,61 @@ fn ipv6_literal_host() {
     let res = bangboo::get(format!("http://[::1]:{}/", addr.port())).unwrap();
     assert_eq!(res.text().unwrap(), "v6");
 }
+
+#[cfg(feature = "charset")]
+#[test]
+fn text_uses_content_type_charset() {
+    // "héllo" in ISO-8859-1.
+    let body = b"h\xe9llo";
+    let addr = server(move |mut stream| {
+        read_request(&mut stream).unwrap();
+        respond(
+            &mut stream,
+            "200 OK",
+            "content-type: text/plain; charset=iso-8859-1\r\n",
+            body,
+        );
+    });
+    let res = bangboo::get(format!("http://{addr}/")).unwrap();
+    assert_eq!(res.text().unwrap(), "héllo");
+}
+
+#[cfg(feature = "charset")]
+#[test]
+fn text_with_charset_default_and_override() {
+    let body = b"h\xe9llo";
+    let addr = server(move |mut stream| {
+        read_request(&mut stream).unwrap();
+        respond(&mut stream, "200 OK", "content-type: text/plain\r\n", body);
+    });
+    // No charset in the header, so the supplied default applies.
+    let res = bangboo::get(format!("http://{addr}/")).unwrap();
+    assert_eq!(res.text_with_charset("iso-8859-1").unwrap(), "héllo");
+
+    // An unknown charset in the header falls through to the caller's
+    // default before UTF-8.
+    let addr = server(move |mut stream| {
+        read_request(&mut stream).unwrap();
+        respond(
+            &mut stream,
+            "200 OK",
+            "content-type: text/plain; charset=x-bogus\r\n",
+            body,
+        );
+    });
+    let res = bangboo::get(format!("http://{addr}/")).unwrap();
+    assert_eq!(res.text_with_charset("iso-8859-1").unwrap(), "héllo");
+
+    // An unknown charset falls back to UTF-8 (lossy).
+    let addr = server(move |mut stream| {
+        read_request(&mut stream).unwrap();
+        respond(
+            &mut stream,
+            "200 OK",
+            "content-type: text/plain; charset=not-a-charset\r\n",
+            body,
+        );
+    });
+    let res = bangboo::get(format!("http://{addr}/")).unwrap();
+    assert_eq!(res.text().unwrap(), "h\u{fffd}llo");
+}

@@ -111,3 +111,31 @@ fn userinfo_in_url_becomes_basic_auth() {
     let res = bangboo::get(format!("http://user:p%40ss@{addr}/")).unwrap();
     assert_eq!(res.text().unwrap(), "ok");
 }
+
+#[test]
+fn request_from_http_request() {
+    let http_req = http::Request::builder()
+        .method("POST")
+        .uri("http://example.com/path?x=1")
+        .header("x-test", "1")
+        .body("payload")
+        .unwrap();
+    let req = bangboo::Request::try_from(http_req).unwrap();
+    assert_eq!(req.method(), &bangboo::Method::POST);
+    assert_eq!(req.url().as_str(), "http://example.com/path?x=1");
+    assert_eq!(req.headers()["x-test"], "1");
+    assert_eq!(req.body().unwrap().as_bytes().unwrap(), b"payload");
+}
+
+#[test]
+fn response_from_http_response() {
+    let http_res = http::Response::builder()
+        .status(418)
+        .header("x-test", "1")
+        .body("teapot")
+        .unwrap();
+    let res = bangboo::Response::from(http_res);
+    assert_eq!(res.status(), bangboo::StatusCode::IM_A_TEAPOT);
+    assert_eq!(res.headers()["x-test"], "1");
+    assert_eq!(res.text().unwrap(), "teapot");
+}

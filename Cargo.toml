@@ -6,21 +6,49 @@ description = "A truly synchronous HTTP/1.1 client with a reqwest-like blocking 
 license = "MIT"
 
 [features]
-default = ["tls"]
+default = ["tls", "charset"]
 tls = ["dep:rustls", "dep:webpki-roots"]
+# Use the operating system's certificate store instead of the bundled
+# webpki-roots set.
+native-roots = ["tls", "dep:rustls-native-certs"]
+charset = ["dep:encoding_rs", "dep:mime"]
+cookies = ["dep:cookie", "dep:cookie_store"]
+gzip = ["dep:flate2"]
+multipart = ["dep:mime", "dep:mime_guess", "dep:rand"]
+deflate = ["dep:flate2"]
+brotli = ["dep:brotli"]
+zstd = ["dep:zstd"]
 
 [dependencies]
 base64 = "0.22"
+brotli = { version = "8", optional = true }
 bytes = "1"
+cookie = { version = "0.18", optional = true }
+cookie_store = { version = "0.22", optional = true }
+encoding_rs = { version = "0.8", optional = true }
+flate2 = { version = "1", optional = true }
 percent-encoding = "2"
+rand = { version = "0.9", optional = true }
 http = "1"
+log = "0.4"
+mime = { version = "0.3", optional = true }
+mime_guess = { version = "2", optional = true }
 serde = "1"
 serde_json = "1"
 serde_urlencoded = "0.7"
+socket2 = { version = "0.6", features = ["all"] }
 url = "2"
+zstd = { version = "0.13", optional = true }
 
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"], optional = true }
+rustls-native-certs = { version = "0.8", optional = true }
 webpki-roots = { version = "1", optional = true }
 
 [dev-dependencies]
+brotli = "8"
+flate2 = "1"
+http = "1"
+rcgen = { version = "0.14.8", default-features = false, features = ["pem", "crypto", "ring"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 serde = { version = "1", features = ["derive"] }
+zstd = "0.13"

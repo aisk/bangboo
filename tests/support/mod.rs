@@ -6,6 +6,9 @@ use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::thread;
 
+#[cfg(feature = "tls")]
+pub mod tls;
+
 /// Spawns a server handling a single connection with `handler`.
 pub fn server<F>(handler: F) -> SocketAddr
 where

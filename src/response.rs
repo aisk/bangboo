@@ -11,6 +11,7 @@ use serde::de::DeserializeOwned;
 use url::Url;
 
 use crate::connect::Conn;
+use crate::decoder::Decoder;
 use crate::pool::{Pool, PoolKey};
 use crate::proto::{self, BodyLength};
 
@@ -26,7 +27,8 @@ pub struct Response {
     headers: HeaderMap,
     url: Url,
     remote_addr: Option<SocketAddr>,
-    body: BodyReader,
+    extensions: http::Extensions,
+    body: Decoder,
 }
 
 impl Response {
@@ -36,7 +38,7 @@ impl Response {
         headers: HeaderMap,
         url: Url,
         remote_addr: Option<SocketAddr>,
-        body: BodyReader,
+        body: Decoder,
     ) -> Response {
         Response {
             status,
@@ -44,6 +46,7 @@ impl Response {
             headers,
             url,
             remote_addr,
+            extensions: http::Extensions::new(),
             body,
         }
     }
@@ -78,13 +81,35 @@ impl Response {
         self.remote_addr
     }
 
+    /// Retrieve the cookies contained in the response.
+    ///
+    /// Note that invalid `Set-Cookie` headers are silently ignored.
+    #[cfg(feature = "cookies")]
+    pub fn cookies(&self) -> impl Iterator<Item = crate::cookie::Cookie<'_>> {
+        crate::cookie::extract_response_cookies(&self.headers).filter_map(Result::ok)
+    }
+
+    /// Returns a reference to the associated extensions.
+    pub fn extensions(&self) -> &http::Extensions {
+        &self.extensions
+    }
+
+    /// Returns a mutable reference to the associated extensions.
+    pub fn extensions_mut(&mut self) -> &mut http::Extensions {
+        &mut self.extensions
+    }
+
     /// Get the content-length of the response, if it is known.
     ///
     /// Reasons it may not be known:
     ///
     /// - The server didn't send a `content-length` header.
     /// - The response is chunked-encoded.
+    /// - The body is being transparently decompressed.
     pub fn content_length(&self) -> Option<u64> {
+        if self.body.is_decoding() {
+            return None;
+        }
         self.headers
             .get(CONTENT_LENGTH)
             .and_then(|v| v.to_str().ok())
@@ -113,11 +138,48 @@ impl Response {
 
     /// Get the response text.
     ///
-    /// The body is decoded as UTF-8, replacing invalid sequences with
-    /// `U+FFFD`. (Unlike reqwest, no charset sniffing is performed.)
+    /// With the `charset` feature (on by default) the encoding is taken
+    /// from the `charset` parameter of the `Content-Type` header, defaulting
+    /// to UTF-8. Malformed sequences are replaced with `U+FFFD`.
     pub fn text(self) -> crate::Result<String> {
+        #[cfg(feature = "charset")]
+        {
+            self.text_with_charset("utf-8")
+        }
+        #[cfg(not(feature = "charset"))]
+        {
+            let bytes = self.bytes()?;
+            Ok(String::from_utf8_lossy(&bytes).into_owned())
+        }
+    }
+
+    /// Get the response text given a specific encoding.
+    ///
+    /// The encoding is taken from the `charset` parameter of the
+    /// `Content-Type` header; `default_encoding` is used when the header is
+    /// absent, has no charset, or names an encoding that is not known.
+    /// Malformed sequences are replaced with `U+FFFD`.
+    #[cfg(feature = "charset")]
+    pub fn text_with_charset(self, default_encoding: &str) -> crate::Result<String> {
+        let content_type = self
+            .headers
+            .get(http::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<mime::Mime>().ok());
+        let header_charset = content_type
+            .as_ref()
+            .and_then(|mime| mime.get_param("charset").map(|charset| charset.as_str().to_owned()));
+        // An unrecognized charset falls through to the caller's default,
+        // and only then to UTF-8.
+        let encoding = header_charset
+            .as_deref()
+            .and_then(|label| encoding_rs::Encoding::for_label(label.as_bytes()))
+            .or_else(|| encoding_rs::Encoding::for_label(default_encoding.as_bytes()))
+            .unwrap_or(encoding_rs::UTF_8);
+
         let bytes = self.bytes()?;
-        Ok(String::from_utf8_lossy(&bytes).into_owned())
+        let (text, _, _) = encoding.decode(&bytes);
+        Ok(text.into_owned())
     }
 
     /// Copy the response body into a writer.
@@ -149,6 +211,31 @@ impl Response {
             Err(crate::error::status_code(self.url.clone(), status))
         } else {
             Ok(self)
+        }
+    }
+}
+
+impl<T: Into<bytes::Bytes>> From<http::Response<T>> for Response {
+    fn from(response: http::Response<T>) -> Response {
+        let (parts, body) = response.into_parts();
+        let http::response::Parts {
+            status,
+            version,
+            headers,
+            extensions,
+            ..
+        } = parts;
+        // A synthesized response has no connection behind it; the body is
+        // served straight from memory.
+        let url = Url::parse("http://no.url.provided.local").expect("valid url");
+        Response {
+            status,
+            version,
+            headers,
+            url,
+            remote_addr: None,
+            extensions,
+            body: Decoder::in_memory(body.into()),
         }
     }
 }

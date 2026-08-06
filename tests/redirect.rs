@@ -130,3 +130,132 @@ fn redirect_inherits_fragment() {
     assert_eq!(res.url().fragment(), Some("other"));
     assert!(res.url().path().ends_with("/done"));
 }
+
+#[test]
+fn redirect_custom_policy_stop_and_error() {
+    let addr = server(|mut stream| {
+        read_request(&mut stream).unwrap();
+        respond(&mut stream, "302 Found", "location: /blocked\r\n", b"");
+    });
+
+    let client = bangboo::Client::builder()
+        .redirect(bangboo::redirect::Policy::custom(|attempt| {
+            if attempt.url().path() == "/blocked" {
+                attempt.stop()
+            } else {
+                attempt.follow()
+            }
+        }))
+        .build()
+        .unwrap();
+    let res = client.get(format!("http://{addr}/")).send().unwrap();
+    assert_eq!(res.status(), bangboo::StatusCode::FOUND);
+
+    let addr = server(|mut stream| {
+        read_request(&mut stream).unwrap();
+        respond(&mut stream, "302 Found", "location: /derailed\r\n", b"");
+    });
+    let client = bangboo::Client::builder()
+        .redirect(bangboo::redirect::Policy::custom(|attempt| {
+            attempt.error("no redirects for you")
+        }))
+        .build()
+        .unwrap();
+    let err = client.get(format!("http://{addr}/")).send().unwrap_err();
+    assert!(err.is_redirect(), "unexpected error: {err:?}");
+}
+
+#[test]
+fn redirect_custom_policy_sees_chain() {
+    let addr = server(|mut stream| {
+        read_request(&mut stream).unwrap();
+        respond(&mut stream, "302 Found", "location: /hop1\r\n", b"");
+        read_request(&mut stream).unwrap();
+        respond(&mut stream, "302 Found", "location: /hop2\r\n", b"");
+        read_request(&mut stream).unwrap();
+        respond(&mut stream, "200 OK", "", b"end");
+    });
+
+    let client = bangboo::Client::builder()
+        .redirect(bangboo::redirect::Policy::custom(|attempt| {
+            assert!(!attempt.previous().is_empty());
+            assert_eq!(attempt.status(), bangboo::StatusCode::FOUND);
+            attempt.follow()
+        }))
+        .build()
+        .unwrap();
+    let res = client.get(format!("http://{addr}/")).send().unwrap();
+    assert_eq!(res.text().unwrap(), "end");
+}
+
+#[test]
+fn redirect_sets_referer() {
+    let addr = server(|mut stream| {
+        let (head, _) = read_request(&mut stream).unwrap();
+        assert!(!head.to_lowercase().contains("referer"), "head: {head}");
+        respond(&mut stream, "302 Found", "location: /next\r\n", b"");
+        let (head, _) = read_request(&mut stream).unwrap();
+        assert!(head.to_lowercase().contains("referer: http://"), "head: {head}");
+        respond(&mut stream, "200 OK", "", b"ok");
+    });
+
+    let client = bangboo::Client::new();
+    let res = client.get(format!("http://{addr}/start")).send().unwrap();
+    assert_eq!(res.status(), bangboo::StatusCode::OK);
+}
+
+#[test]
+fn redirect_referer_disabled() {
+    let addr = server(|mut stream| {
+        read_request(&mut stream).unwrap();
+        respond(&mut stream, "302 Found", "location: /next\r\n", b"");
+        let (head, _) = read_request(&mut stream).unwrap();
+        assert!(!head.to_lowercase().contains("referer"), "head: {head}");
+        respond(&mut stream, "200 OK", "", b"ok");
+    });
+
+    let client = bangboo::Client::builder().referer(false).build().unwrap();
+    let res = client.get(format!("http://{addr}/start")).send().unwrap();
+    assert_eq!(res.status(), bangboo::StatusCode::OK);
+}
+
+#[test]
+fn redirect_limit_allows_exactly_max_hops() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    // Three hops then a 200: allowed by limited(3).
+    let seen = Arc::new(AtomicUsize::new(0));
+    let counter = seen.clone();
+    let addr = server_loop(move |mut stream| {
+        while read_request(&mut stream).is_some() {
+            let n = counter.fetch_add(1, Ordering::SeqCst);
+            if n < 3 {
+                respond(&mut stream, "302 Found", "location: /next\r\n", b"");
+            } else {
+                respond(&mut stream, "200 OK", "", b"arrived");
+            }
+        }
+    });
+
+    let client = bangboo::Client::builder()
+        .redirect(bangboo::redirect::Policy::limited(3))
+        .build()
+        .unwrap();
+    let res = client.get(format!("http://{addr}/")).send().unwrap();
+    assert_eq!(res.text().unwrap(), "arrived");
+    assert_eq!(seen.load(Ordering::SeqCst), 4);
+
+    // A fourth hop exceeds the limit.
+    let addr = server_loop(|mut stream| {
+        while read_request(&mut stream).is_some() {
+            respond(&mut stream, "302 Found", "location: /next\r\n", b"");
+        }
+    });
+    let client = bangboo::Client::builder()
+        .redirect(bangboo::redirect::Policy::limited(3))
+        .build()
+        .unwrap();
+    let err = client.get(format!("http://{addr}/")).send().unwrap_err();
+    assert!(err.is_redirect(), "unexpected error: {err:?}");
+}

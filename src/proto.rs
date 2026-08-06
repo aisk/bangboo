@@ -11,9 +11,37 @@ use url::Url;
 use crate::body::{Body, BodyKindMut};
 use crate::connect::Conn;
 
-const MAX_HEADERS: usize = 128;
 const MAX_INFORMATIONAL: usize = 10;
 const CHUNK_BUF_SIZE: usize = 8 * 1024;
+
+/// Tweaks to the HTTP/1 wire behavior, configured on the `ClientBuilder`
+/// via the `http1_*` methods.
+#[derive(Clone)]
+pub(crate) struct Http1Opts {
+    /// Maximum number of headers accepted in a response.
+    pub(crate) max_headers: usize,
+    /// Write request header names in Title-Case.
+    pub(crate) title_case_headers: bool,
+    /// Accept obsolete line folding (a header value continued on the next
+    /// line by leading whitespace) in responses.
+    pub(crate) allow_obsolete_multiline_headers: bool,
+    /// Silently skip malformed header lines in responses.
+    pub(crate) ignore_invalid_headers: bool,
+    /// Tolerate whitespace between a response header name and the colon.
+    pub(crate) allow_spaces_after_header_name: bool,
+}
+
+impl Default for Http1Opts {
+    fn default() -> Self {
+        Http1Opts {
+            max_headers: 128,
+            title_case_headers: false,
+            allow_obsolete_multiline_headers: false,
+            ignore_invalid_headers: false,
+            allow_spaces_after_header_name: false,
+        }
+    }
+}
 
 pub(crate) struct Head {
     pub(crate) version: Version,
@@ -21,6 +49,7 @@ pub(crate) struct Head {
     pub(crate) headers: HeaderMap,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn write_request(
     conn: &mut Conn,
     method: &Method,
@@ -28,6 +57,8 @@ pub(crate) fn write_request(
     version: Version,
     headers: &HeaderMap,
     body: Option<&mut Body>,
+    target: RequestTarget,
+    opts: &Http1Opts,
 ) -> io::Result<()> {
     enum Framing {
         NoBody,
@@ -107,9 +138,24 @@ pub(crate) fn write_request(
         ));
     }
 
+    let write_name = |head: &mut Vec<u8>, name: &str| {
+        if opts.title_case_headers {
+            write_title_case(head, name.as_bytes());
+        } else {
+            head.extend_from_slice(name.as_bytes());
+        }
+    };
+
     let mut head = Vec::with_capacity(256);
     head.extend_from_slice(method.as_str().as_bytes());
     head.push(b' ');
+    // An HTTP proxy receives the absolute-form target (RFC 9112 §3.2.2);
+    // everything else gets the usual origin-form.
+    if target == RequestTarget::Absolute {
+        head.extend_from_slice(url.scheme().as_bytes());
+        head.extend_from_slice(b"://");
+        head.extend_from_slice(host_header(url).as_bytes());
+    }
     head.extend_from_slice(url.path().as_bytes());
     if let Some(query) = url.query() {
         head.push(b'?');
@@ -122,7 +168,8 @@ pub(crate) fn write_request(
     }
 
     if !headers.contains_key(HOST) {
-        head.extend_from_slice(b"host: ");
+        write_name(&mut head, "host");
+        head.extend_from_slice(b": ");
         head.extend_from_slice(host_header(url).as_bytes());
         head.extend_from_slice(b"\r\n");
     }
@@ -131,18 +178,20 @@ pub(crate) fn write_request(
         Framing::NoBody => {}
         Framing::Len(len) => {
             if !headers.contains_key(CONTENT_LENGTH) {
-                head.extend_from_slice(format!("content-length: {len}\r\n").as_bytes());
+                write_name(&mut head, "content-length");
+                head.extend_from_slice(format!(": {len}\r\n").as_bytes());
             }
         }
         Framing::Chunked => {
             if !headers.contains_key(TRANSFER_ENCODING) {
-                head.extend_from_slice(b"transfer-encoding: chunked\r\n");
+                write_name(&mut head, "transfer-encoding");
+                head.extend_from_slice(b": chunked\r\n");
             }
         }
     }
 
     for (name, value) in headers.iter() {
-        head.extend_from_slice(name.as_str().as_bytes());
+        write_name(&mut head, name.as_str());
         head.extend_from_slice(b": ");
         head.extend_from_slice(value.as_bytes());
         head.extend_from_slice(b"\r\n");
@@ -216,6 +265,29 @@ pub(crate) fn write_request(
     conn.flush()
 }
 
+/// The request-target form used in the request line (RFC 9112 §3.2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RequestTarget {
+    /// `GET /path HTTP/1.1` — the normal form.
+    Origin,
+    /// `GET http://host/path HTTP/1.1` — used towards HTTP proxies.
+    Absolute,
+}
+
+/// Writes `name` capitalizing the first letter and every letter following
+/// a `-` (e.g. `content-length` -> `Content-Length`).
+fn write_title_case(out: &mut Vec<u8>, name: &[u8]) {
+    let mut upper_next = true;
+    for &b in name {
+        if upper_next {
+            out.push(b.to_ascii_uppercase());
+        } else {
+            out.push(b);
+        }
+        upper_next = b == b'-';
+    }
+}
+
 pub(crate) fn host_header(url: &Url) -> String {
     let host = url.host_str().unwrap_or_default();
     match (url.port(), url.scheme()) {
@@ -225,13 +297,15 @@ pub(crate) fn host_header(url: &Url) -> String {
 }
 
 /// Reads a response head, skipping any informational (1xx) responses.
-pub(crate) fn read_head(conn: &mut Conn) -> io::Result<Head> {
+pub(crate) fn read_head(conn: &mut Conn, opts: &Http1Opts) -> io::Result<Head> {
     let mut informational = 0usize;
     loop {
         let line = conn.read_line()?;
         let (version, status) = parse_status_line(&line)?;
 
         let mut headers = HeaderMap::new();
+        // The name of the last appended header, for obsolete line folding.
+        let mut last_name: Option<HeaderName> = None;
         let mut count = 0usize;
         loop {
             let line = conn.read_line()?;
@@ -239,25 +313,68 @@ pub(crate) fn read_head(conn: &mut Conn) -> io::Result<Head> {
                 break;
             }
             count += 1;
-            if count > MAX_HEADERS {
+            if count > opts.max_headers {
                 return Err(invalid_data("too many response headers"));
             }
-            let colon = line
-                .iter()
-                .position(|&b| b == b':')
-                .ok_or_else(|| invalid_data("malformed header line"))?;
-            let name = HeaderName::from_bytes(&line[..colon])
-                .map_err(|_| invalid_data("invalid header name"))?;
-            let mut value = &line[colon + 1..];
-            while let [b' ' | b'\t', rest @ ..] = value {
-                value = rest;
+
+            // Obsolete line folding (RFC 9112 §5.2): a line starting with
+            // whitespace continues the previous header's value.
+            if let [b' ' | b'\t', ..] = line[..] {
+                if !opts.allow_obsolete_multiline_headers {
+                    if opts.ignore_invalid_headers {
+                        continue;
+                    }
+                    return Err(invalid_data("obsolete multiline header in response"));
+                }
+                let Some(name) = last_name.as_ref() else {
+                    return Err(invalid_data("response starts with a folded header line"));
+                };
+                let folded = trim_ows(&line);
+                let prev = headers
+                    .get_all(name)
+                    .iter()
+                    .next_back()
+                    .expect("last_name is always present in headers");
+                let mut joined = prev.as_bytes().to_vec();
+                joined.push(b' ');
+                joined.extend_from_slice(folded);
+                let joined = HeaderValue::from_bytes(&joined)
+                    .map_err(|_| invalid_data("invalid header value"))?;
+                // Replace the last value for this name, keeping the others.
+                let mut values: Vec<HeaderValue> = headers.get_all(name).iter().cloned().collect();
+                *values.last_mut().expect("non-empty") = joined;
+                headers.remove(name);
+                for value in values {
+                    headers.append(name.clone(), value);
+                }
+                continue;
             }
-            while let [rest @ .., b' ' | b'\t'] = value {
-                value = rest;
+
+            let parsed = (|| {
+                let colon = line
+                    .iter()
+                    .position(|&b| b == b':')
+                    .ok_or_else(|| invalid_data("malformed header line"))?;
+                let mut name = &line[..colon];
+                if opts.allow_spaces_after_header_name {
+                    while let [rest @ .., b' ' | b'\t'] = name {
+                        name = rest;
+                    }
+                }
+                let name = HeaderName::from_bytes(name)
+                    .map_err(|_| invalid_data("invalid header name"))?;
+                let value = HeaderValue::from_bytes(trim_ows(&line[colon + 1..]))
+                    .map_err(|_| invalid_data("invalid header value"))?;
+                Ok::<_, io::Error>((name, value))
+            })();
+            match parsed {
+                Ok((name, value)) => {
+                    headers.append(name.clone(), value);
+                    last_name = Some(name);
+                }
+                Err(_) if opts.ignore_invalid_headers => continue,
+                Err(e) => return Err(e),
             }
-            let value = HeaderValue::from_bytes(value)
-                .map_err(|_| invalid_data("invalid header value"))?;
-            headers.append(name, value);
         }
 
         // 1xx responses (e.g. 100 Continue) are interim: keep reading.
@@ -430,6 +547,17 @@ pub(crate) fn parse_chunk_size(line: &[u8]) -> io::Result<u64> {
             .ok_or_else(|| invalid_data("chunk size too large"))?;
     }
     Ok(size)
+}
+
+/// Trims optional whitespace (spaces and tabs) from both ends.
+fn trim_ows(mut value: &[u8]) -> &[u8] {
+    while let [b' ' | b'\t', rest @ ..] = value {
+        value = rest;
+    }
+    while let [rest @ .., b' ' | b'\t'] = value {
+        value = rest;
+    }
+    value
 }
 
 fn invalid_data(msg: &'static str) -> io::Error {

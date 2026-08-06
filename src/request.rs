@@ -300,6 +300,22 @@ impl RequestBuilder {
         self
     }
 
+    /// Sends a multipart/form-data body.
+    ///
+    /// The form's `Content-Length` is computed when every part has a known
+    /// length; otherwise the body is streamed with chunked framing.
+    #[cfg(feature = "multipart")]
+    pub fn multipart(self, multipart: crate::multipart::Form) -> RequestBuilder {
+        let content_type = multipart.content_type();
+        let length = multipart.compute_length();
+        let builder = self.header(CONTENT_TYPE, content_type);
+        let body = match length {
+            Some(length) => Body::sized(multipart.into_reader(), length),
+            None => Body::new(multipart.into_reader()),
+        };
+        builder.body(body)
+    }
+
     /// Send a JSON body.
     ///
     /// Sets the body to the JSON serialization of the passed value, and
@@ -362,6 +378,30 @@ impl RequestBuilder {
                 client: self.client.clone(),
                 request: Ok(req),
             })
+    }
+}
+
+impl<T: Into<Body>> TryFrom<http::Request<T>> for Request {
+    type Error = crate::Error;
+
+    fn try_from(req: http::Request<T>) -> crate::Result<Self> {
+        let (parts, body) = req.into_parts();
+        let http::request::Parts {
+            method,
+            uri,
+            headers,
+            version,
+            ..
+        } = parts;
+        let url = Url::parse(&uri.to_string()).map_err(crate::error::builder)?;
+        Ok(Request {
+            method,
+            url,
+            headers,
+            body: Some(body.into()),
+            timeout: None,
+            version,
+        })
     }
 }
 

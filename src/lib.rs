@@ -47,37 +47,64 @@
 //! # }
 //! ```
 //!
+//! ## Features
+//!
+//! | Feature | Default | What it adds |
+//! |---|---|---|
+//! | `tls` | yes | HTTPS via rustls, and the [`tls`] configuration module |
+//! | `charset` | yes | charset-aware [`Response::text`] and [`Response::text_with_charset`] |
+//! | `native-roots` | no | validate against the OS certificate store instead of the bundled roots |
+//! | `cookies` | no | the [`cookie`] store, `Set-Cookie` handling, [`Response::cookies`] |
+//! | `gzip`, `deflate`, `brotli`, `zstd` | no | transparent response body decompression |
+//! | `multipart` | no | [`multipart::Form`] bodies |
+//!
+//! Proxies (HTTP, HTTPS and SOCKS4/5, plus the `*_proxy` environment
+//! variables) and DNS overrides are always available.
+//!
+//! With the `tls` feature, server certificates are validated against the
+//! bundled Mozilla root set ([`webpki-roots`]) by default; the platform
+//! store can be used instead with `native-roots`, and additional roots,
+//! client certificates and version bounds are configured through the
+//! [`ClientBuilder`].
+//!
 //! ## Scope
 //!
 //! bangboo intentionally implements only HTTP/1.1 (and 1.0). Features of
-//! reqwest that are tied to its async internals or to HTTP/2+ (`http2_*`,
-//! `http3_*`, connector layers, etc.) are omitted. Currently not
-//! implemented: proxies, cookies, automatic decompression, and multipart.
-//!
-//! With the `tls` feature (on by default), server certificates are
-//! validated against the bundled Mozilla root set ([`webpki-roots`]);
-//! system/native certificate stores and custom root certificates are not
-//! currently supported, so servers using a private CA will fail to verify.
+//! reqwest that exist only because of its async internals, or that require
+//! HTTP/2+ (`http2_*`, `http3_*`, tower connector layers), are omitted.
 //!
 //! [`webpki-roots`]: https://docs.rs/webpki-roots
 
 mod body;
 mod client;
 mod connect;
+#[cfg(feature = "cookies")]
+pub mod cookie;
+mod decoder;
+pub mod dns;
 mod error;
 mod into_url;
+#[cfg(feature = "multipart")]
+pub mod multipart;
 mod pool;
 mod proto;
+mod proxy;
 pub mod redirect;
 mod request;
 mod response;
+mod socks;
+#[cfg(feature = "tls")]
+pub mod tls;
 
 pub use self::body::Body;
 pub use self::client::{Client, ClientBuilder};
 pub use self::error::{Error, Result};
 pub use self::into_url::IntoUrl;
+pub use self::proxy::{IntoProxy, NoProxy, Proxy};
 pub use self::request::{Request, RequestBuilder};
 pub use self::response::Response;
+#[cfg(feature = "tls")]
+pub use self::tls::{Certificate, CertificateRevocationList, Identity};
 
 // Re-exports of common types used in the API, mirroring reqwest.
 pub use http::header;
