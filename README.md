@@ -51,6 +51,22 @@ let res = client
     .send()?;
 ```
 
+To send JSON, pass any `serde::Serialize` value to `json`; it also sets the `Content-Type: application/json` header:
+
+```rust
+let res = client
+    .post("http://httpbin.org/post")
+    .json(&serde_json::json!({ "lang": "rust" }))
+    .send()?;
+```
+
+To receive JSON, `Response::json` deserializes the response body into any `serde::Deserialize` type:
+
+```rust
+let json: serde_json::Value = bangboo::get("http://httpbin.org/json")?.json()?;
+println!("{}", json["slideshow"]["title"]);
+```
+
 `Response` implements `std::io::Read`, so bodies can be streamed instead of buffered:
 
 ```rust

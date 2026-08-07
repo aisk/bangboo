@@ -35,6 +35,32 @@
 //! # }
 //! ```
 //!
+//! To send JSON, pass any [`serde::Serialize`] value to
+//! [`RequestBuilder::json`]; it also sets the
+//! `Content-Type: application/json` header:
+//!
+//! ```rust,no_run
+//! # fn run() -> Result<(), bangboo::Error> {
+//! # let client = bangboo::Client::new();
+//! let res = client
+//!     .post("http://httpbin.org/post")
+//!     .json(&serde_json::json!({ "lang": "rust" }))
+//!     .send()?;
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! To receive JSON, [`Response::json`] deserializes the response body into
+//! any [`serde::Deserialize`] type:
+//!
+//! ```rust,no_run
+//! # fn run() -> Result<(), bangboo::Error> {
+//! let json: serde_json::Value = bangboo::get("http://httpbin.org/json")?.json()?;
+//! println!("{}", json["slideshow"]["title"]);
+//! # Ok(())
+//! # }
+//! ```
+//!
 //! [`Response`] implements `std::io::Read`, so response bodies can be
 //! streamed instead of buffered:
 //!
