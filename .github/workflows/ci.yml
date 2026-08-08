@@ -1,0 +1,86 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+  RUSTDOCFLAGS: -D warnings
+
+jobs:
+  fmt:
+    name: rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  clippy:
+    name: clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      # Lint the full crate surface, including tests, examples and benches,
+      # across every feature combination we ship.
+      - run: cargo clippy --workspace --all-targets --all-features
+
+  test:
+    name: test (${{ matrix.os }} / ${{ matrix.features.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        features:
+          - name: default
+            args: ""
+          - name: all
+            args: --all-features
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test ${{ matrix.features.args }}
+
+  build:
+    # Ensure the crate compiles under every feature subset we promise in the
+    # README. Tests (and clippy) already cover default and all-features; here
+    # we exercise the intermediate combinations.
+    name: build (${{ matrix.features }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        features:
+          - --no-default-features
+          - --no-default-features --features tls
+          - --no-default-features --features charset
+          - --features cookies
+          - --features gzip,deflate,brotli,zstd
+          - --features multipart
+          - --features native-roots
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build ${{ matrix.features }}
+      - run: cargo build ${{ matrix.features }} --tests
+
+  docs:
+    name: docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo doc --no-deps --all-features
