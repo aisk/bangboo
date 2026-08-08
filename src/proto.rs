@@ -49,23 +49,30 @@ pub(crate) struct Head {
     pub(crate) headers: HeaderMap,
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn write_request(
-    conn: &mut Conn,
+/// The body framing negotiated for an outgoing request.
+pub(crate) enum Framing {
+    NoBody,
+    Len(u64),
+    Chunked,
+}
+
+/// Determines how a request body is framed on the wire, rejecting
+/// conflicting user-supplied `Content-Length` / `Transfer-Encoding` headers
+/// (request-smuggling vectors) before anything is written.
+///
+/// `write_request` calls this to pick the framing, and
+/// `Client::execute_request` calls it *before* opening a connection so these
+/// misconfigurations are rejected without ever touching the network. Doing it
+/// up front also keeps the resulting error class (`is_request`) stable across
+/// platforms: otherwise a server that hangs up during the TCP handshake (e.g.
+/// Windows surfacing `POLLHUP` from `WSAPoll`) can mask the intended request
+/// error with a connect error.
+pub(crate) fn negotiate_framing(
     method: &Method,
-    url: &Url,
     version: Version,
     headers: &HeaderMap,
-    body: Option<&mut Body>,
-    target: RequestTarget,
-    opts: &Http1Opts,
-) -> io::Result<()> {
-    enum Framing {
-        NoBody,
-        Len(u64),
-        Chunked,
-    }
-
+    body: Option<&Body>,
+) -> io::Result<Framing> {
     // Framing must stay consistent with any Transfer-Encoding /
     // Content-Length headers the caller set themselves: sending a framing
     // that disagrees with those headers desyncs the connection (request
@@ -96,7 +103,7 @@ pub(crate) fn write_request(
         }
         Framing::Chunked
     } else if let Some(user_len) = user_len {
-        match body.as_deref() {
+        match body {
             None if user_len != 0 => {
                 return Err(invalid_input(
                     "Content-Length header is set but the request has no body",
@@ -115,7 +122,7 @@ pub(crate) fn write_request(
             },
         }
     } else {
-        match body.as_deref() {
+        match body {
             None => {
                 // Methods that conventionally carry a body get an explicit
                 // `Content-Length: 0` so servers don't respond 411.
@@ -137,6 +144,22 @@ pub(crate) fn write_request(
             "chunked Transfer-Encoding cannot be used with HTTP/1.0",
         ));
     }
+
+    Ok(framing)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn write_request(
+    conn: &mut Conn,
+    method: &Method,
+    url: &Url,
+    version: Version,
+    headers: &HeaderMap,
+    body: Option<&mut Body>,
+    target: RequestTarget,
+    opts: &Http1Opts,
+) -> io::Result<()> {
+    let framing = negotiate_framing(method, version, headers, body.as_deref())?;
 
     let write_name = |head: &mut Vec<u8>, name: &str| {
         if opts.title_case_headers {

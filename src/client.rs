@@ -969,6 +969,16 @@ impl Client {
                 RequestTarget::Origin
             };
 
+            // Validate the request framing before opening a connection.
+            // Conflicting Content-Length / Transfer-Encoding headers are
+            // request-smuggling vectors and must be rejected without ever
+            // touching the network; doing it up front also keeps the error
+            // class (`is_request`) stable across platforms, so a server that
+            // hangs up during the handshake can't mask it with a connect
+            // error.
+            proto::negotiate_framing(&method, version, write_headers, body.as_ref())
+                .map_err(|e| crate::error::from_io(e).with_url(url.clone()))?;
+
             // A request written on a pooled connection can hit a socket the
             // server already closed; retry once on a fresh connection, but
             // only if the body can be replayed.
