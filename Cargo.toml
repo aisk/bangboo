@@ -1,6 +1,6 @@
 [package]
 name = "bangboo"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 description = "A truly synchronous HTTP/1.1 client with a reqwest-like blocking API"
 license = "MIT"
