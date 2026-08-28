@@ -79,7 +79,15 @@ fn retries_idempotent_put_on_stale_connection() {
 
     let client = bangboo::Client::new();
     let url = format!("http://{addr}/doc");
-    let put = || client.put(&url).body("data").send().unwrap().text().unwrap();
+    let put = || {
+        client
+            .put(&url)
+            .body("data")
+            .send()
+            .unwrap()
+            .text()
+            .unwrap()
+    };
     assert_eq!(put(), "first");
     assert_eq!(put(), "retried");
     assert_eq!(conns.load(Ordering::SeqCst), 2);

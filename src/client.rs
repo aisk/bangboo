@@ -1207,12 +1207,7 @@ fn make_referer(next: &Url, previous: &Url) -> Option<HeaderValue> {
 fn is_idempotent(method: &Method) -> bool {
     matches!(
         *method,
-        Method::GET
-            | Method::HEAD
-            | Method::OPTIONS
-            | Method::TRACE
-            | Method::PUT
-            | Method::DELETE
+        Method::GET | Method::HEAD | Method::OPTIONS | Method::TRACE | Method::PUT | Method::DELETE
     )
 }
 
