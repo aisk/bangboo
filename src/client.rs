@@ -980,10 +980,11 @@ impl Client {
                 .map_err(|e| crate::error::from_io(e).with_url(url.clone()))?;
 
             // A request written on a pooled connection can hit a socket the
-            // server already closed; retry once on a fresh connection, but
-            // only if the body can be replayed.
-            let body_replayable =
-                body.is_none() || body.as_ref().is_some_and(|b| b.as_bytes().is_some());
+            // server already closed; retry once on a fresh connection. A
+            // non-idempotent request may have been acted upon even if no
+            // response bytes arrived, so it must not be replayed.
+            let retryable = is_idempotent(&method)
+                && (body.is_none() || body.as_ref().is_some_and(|b| b.as_bytes().is_some()));
 
             let (conn, head) = loop {
                 let (pooled, mut conn) = match self.inner.pool.checkout(&key) {
@@ -1036,7 +1037,7 @@ impl Client {
                     // been acted upon and must not be replayed.
                     Err(e)
                         if pooled
-                            && body_replayable
+                            && retryable
                             && is_stale_conn_error(&e)
                             && conn.received_bytes() == received_before =>
                     {
@@ -1199,6 +1200,15 @@ fn make_referer(next: &Url, previous: &Url) -> Option<HeaderValue> {
     let _ = referer.set_password(None);
     referer.set_fragment(None);
     referer.as_str().parse().ok()
+}
+
+/// Idempotent methods per RFC 9110 §9.2.2; extension methods are treated as
+/// non-idempotent.
+fn is_idempotent(method: &Method) -> bool {
+    matches!(
+        *method,
+        Method::GET | Method::HEAD | Method::OPTIONS | Method::TRACE | Method::PUT | Method::DELETE
+    )
 }
 
 fn is_stale_conn_error(e: &io::Error) -> bool {

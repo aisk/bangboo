@@ -61,6 +61,65 @@ fn retries_stale_pooled_connection() {
 }
 
 #[test]
+fn retries_idempotent_put_on_stale_connection() {
+    let conns = Arc::new(AtomicUsize::new(0));
+    let conns_server = conns.clone();
+    // The first connection swallows its second request and closes without
+    // responding, so only a retry on a fresh connection can succeed.
+    let addr = server_loop(move |mut stream| {
+        if conns_server.fetch_add(1, Ordering::SeqCst) == 0 {
+            read_request(&mut stream).unwrap();
+            respond(&mut stream, "200 OK", "", b"first");
+            read_request(&mut stream);
+        } else {
+            read_request(&mut stream).unwrap();
+            respond(&mut stream, "200 OK", "", b"retried");
+        }
+    });
+
+    let client = bangboo::Client::new();
+    let url = format!("http://{addr}/doc");
+    let put = || {
+        client
+            .put(&url)
+            .body("data")
+            .send()
+            .unwrap()
+            .text()
+            .unwrap()
+    };
+    assert_eq!(put(), "first");
+    assert_eq!(put(), "retried");
+    assert_eq!(conns.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn no_retry_for_non_idempotent_method() {
+    let conns = Arc::new(AtomicUsize::new(0));
+    let conns_server = conns.clone();
+    // The server fully receives the second POST, then closes without
+    // responding; the POST may have been acted upon, so the client must
+    // surface the error instead of replaying it.
+    let addr = server_loop(move |mut stream| {
+        conns_server.fetch_add(1, Ordering::SeqCst);
+        read_request(&mut stream).unwrap();
+        respond(&mut stream, "200 OK", "", b"first");
+        read_request(&mut stream);
+    });
+
+    let client = bangboo::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
+    let url = format!("http://{addr}/pay");
+    let post = || client.post(&url).body("$$$").send();
+    assert_eq!(post().unwrap().text().unwrap(), "first");
+    let err = post().unwrap_err();
+    assert!(!err.is_timeout(), "unexpected error: {err:?}");
+    assert_eq!(conns.load(Ordering::SeqCst), 1, "POST was wrongly retried");
+}
+
+#[test]
 fn no_retry_after_partial_response() {
     let hits = Arc::new(AtomicUsize::new(0));
     let hits_server = hits.clone();
