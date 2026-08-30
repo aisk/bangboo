@@ -28,6 +28,9 @@ use crate::response::{BodyReader, Response};
 /// keep a connection reusable when following a redirect.
 const REDIRECT_DRAIN_MAX: u64 = 256 * 1024;
 
+/// The `User-Agent` sent unless the caller sets one of their own.
+const DEFAULT_USER_AGENT: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
+
 /// A `Client` to make Requests with.
 ///
 /// The Client has various configuration values to tweak, but the defaults
@@ -97,6 +100,7 @@ impl ClientBuilder {
     pub fn new() -> Self {
         let mut headers = HeaderMap::new();
         headers.insert(ACCEPT, HeaderValue::from_static("*/*"));
+        headers.insert(USER_AGENT, HeaderValue::from_static(DEFAULT_USER_AGENT));
         ClientBuilder {
             headers,
             redirect: redirect::Policy::default(),
@@ -188,6 +192,8 @@ impl ClientBuilder {
     }
 
     /// Sets the `User-Agent` header to be used by this client.
+    ///
+    /// Defaults to `bangboo/x.y.z`.
     pub fn user_agent<V>(mut self, value: V) -> ClientBuilder
     where
         HeaderValue: TryFrom<V>,
@@ -201,6 +207,15 @@ impl ClientBuilder {
                 self.error = Some(crate::error::builder(e.into()));
             }
         }
+        self
+    }
+
+    /// Removes the default `User-Agent`, so no such header is sent unless a
+    /// request sets one itself.
+    ///
+    /// A later `user_agent` call puts one back; the last call wins.
+    pub fn no_user_agent(mut self) -> ClientBuilder {
+        self.headers.remove(USER_AGENT);
         self
     }
 
