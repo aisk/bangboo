@@ -144,3 +144,45 @@ fn response_from_http_response() {
     assert_eq!(res.headers()["x-test"], "1");
     assert_eq!(res.text().unwrap(), "teapot");
 }
+
+#[test]
+fn default_user_agent_is_sent_and_overridable() {
+    let expected = format!("user-agent: bangboo/{}", env!("CARGO_PKG_VERSION"));
+    let addr = server(move |mut stream| {
+        let (head, _) = read_request(&mut stream).unwrap();
+        assert!(head.to_lowercase().contains(&expected), "got head: {head}");
+        respond(&mut stream, "200 OK", "", b"ok");
+    });
+    let res = bangboo::get(format!("http://{addr}/")).unwrap();
+    assert_eq!(res.text().unwrap(), "ok");
+
+    let addr = server(|mut stream| {
+        let (head, _) = read_request(&mut stream).unwrap();
+        let head = head.to_lowercase();
+        assert!(head.contains("user-agent: mine/2.0"), "got head: {head}");
+        assert!(!head.contains("bangboo/"), "got head: {head}");
+        respond(&mut stream, "200 OK", "", b"ok");
+    });
+    let res = bangboo::Client::new()
+        .get(format!("http://{addr}/"))
+        .header("user-agent", "mine/2.0")
+        .send()
+        .unwrap();
+    assert_eq!(res.text().unwrap(), "ok");
+}
+
+#[test]
+fn no_user_agent_sends_none() {
+    let addr = server(|mut stream| {
+        let (head, _) = read_request(&mut stream).unwrap();
+        assert!(
+            !head.to_lowercase().contains("user-agent"),
+            "got head: {head}"
+        );
+        respond(&mut stream, "200 OK", "", b"ok");
+    });
+
+    let client = bangboo::Client::builder().no_user_agent().build().unwrap();
+    let res = client.get(format!("http://{addr}/")).send().unwrap();
+    assert_eq!(res.text().unwrap(), "ok");
+}
