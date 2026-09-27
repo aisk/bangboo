@@ -1071,6 +1071,7 @@ impl Client {
             let length = proto::body_length(&method, head.status, head.version, &head.headers)
                 .map_err(|e| crate::error::from_io(e).with_url(url.clone()))?;
             let reusable = request_fully_written
+                && proto::can_keep_alive(version, write_headers)
                 && proto::can_keep_alive(head.version, &head.headers)
                 && length != BodyLength::CloseDelimited;
             let reuse = reusable.then(|| (self.inner.pool.clone(), key));

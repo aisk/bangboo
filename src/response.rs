@@ -507,16 +507,6 @@ impl Read for BodyReader {
                             return Ok(0);
                         }
                         Ok(n) => return Ok(n),
-                        // Servers often close without a TLS close_notify;
-                        // treat that as a clean EOF for close-delimited
-                        // bodies, like other clients do. Trade-off: a
-                        // close-delimited HTTPS body can be silently
-                        // truncated by an attacker resetting the TCP
-                        // connection.
-                        Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => {
-                            self.poison();
-                            return Ok(0);
-                        }
                         Err(e) => {
                             self.poison();
                             return Err(e);
