@@ -76,6 +76,35 @@ impl TestCert {
         serve(Arc::new(config), body)
     }
 
+    /// Sends a close-delimited response with or without TLS close_notify.
+    pub fn serve_close_delimited(&self, close_notify: bool) -> SocketAddr {
+        let config = Arc::new(
+            rustls::ServerConfig::builder()
+                .with_no_client_auth()
+                .with_single_cert(self.cert_chain.clone(), self.key.clone_key())
+                .unwrap(),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        thread::spawn(move || {
+            let (mut sock, _) = listener.accept().unwrap();
+            let mut conn = rustls::ServerConnection::new(config).unwrap();
+            conn.complete_io(&mut sock).unwrap();
+            let mut tls = rustls::Stream::new(&mut conn, &mut sock);
+            let mut buf = [0u8; 4096];
+            let _ = tls.read(&mut buf);
+            tls.write_all(b"HTTP/1.1 200 OK\r\nconnection: close\r\n\r\npartial body")
+                .unwrap();
+            tls.flush().unwrap();
+            if close_notify {
+                drop(tls);
+                conn.send_close_notify();
+                conn.complete_io(&mut sock).unwrap();
+            }
+        });
+        addr
+    }
+
     /// Spawns a TLS server that requires a client certificate signed by
     /// this CA.
     pub fn serve_once_mtls(&self, body: &'static str) -> SocketAddr {

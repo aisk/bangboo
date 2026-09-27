@@ -190,6 +190,22 @@ fn conflicting_content_length_response_rejected() {
 }
 
 #[test]
+fn response_with_transfer_encoding_and_content_length_rejected() {
+    let addr = server(|mut stream| {
+        read_request(&mut stream).unwrap();
+        stream
+            .write_all(
+                b"HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\ncontent-length: 999\r\n\r\n2\r\nok\r\n0\r\n\r\n",
+            )
+            .unwrap();
+    });
+
+    let client = bangboo::Client::builder().no_proxy().build().unwrap();
+    let err = client.get(format!("http://{addr}/")).send().unwrap_err();
+    assert!(err.is_request(), "unexpected error: {err:?}");
+}
+
+#[test]
 fn malformed_chunk_size_rejected() {
     // `+5` parses under from_str_radix but is not a valid chunk-size.
     let addr = server(|mut stream| {

@@ -4,6 +4,7 @@
 mod support;
 
 use std::io::Write;
+use std::net::TcpListener;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
@@ -37,6 +38,46 @@ fn keep_alive_reuse() {
         client.get(&url).send().unwrap().text().unwrap(),
         "response 1"
     );
+}
+
+#[test]
+fn request_connection_close_prevents_reuse() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = thread::spawn(move || {
+        let (mut first, _) = listener.accept().unwrap();
+        let (head, _) = read_request(&mut first).unwrap();
+        assert!(
+            head.to_ascii_lowercase()
+                .contains("connection: keep-alive, close")
+        );
+        respond(&mut first, "200 OK", "", b"first");
+
+        // Keep the first socket open: a response-side close or an early FIN
+        // must not be what prevents reuse.
+        let (mut second, _) = listener.accept().unwrap();
+        read_request(&mut second).unwrap();
+        respond(&mut second, "200 OK", "", b"second");
+    });
+
+    let client = bangboo::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(3))
+        .build()
+        .unwrap();
+    let url = format!("http://{addr}/");
+    assert_eq!(
+        client
+            .get(&url)
+            .header("connection", "keep-alive, close")
+            .send()
+            .unwrap()
+            .text()
+            .unwrap(),
+        "first"
+    );
+    assert_eq!(client.get(&url).send().unwrap().text().unwrap(), "second");
+    server.join().unwrap();
 }
 
 #[test]

@@ -447,6 +447,13 @@ pub(crate) fn body_length(
     version: Version,
     headers: &HeaderMap,
 ) -> io::Result<BodyLength> {
+    // Conflicting framing headers can make peers disagree about where this
+    // response ends. Do not accept the response or reuse its connection.
+    if headers.contains_key(TRANSFER_ENCODING) && headers.contains_key(CONTENT_LENGTH) {
+        return Err(invalid_data(
+            "response has both Transfer-Encoding and Content-Length headers",
+        ));
+    }
     // After 101 the connection speaks another protocol; treating the body
     // as close-delimited keeps the socket out of the keep-alive pool.
     if status == StatusCode::SWITCHING_PROTOCOLS {

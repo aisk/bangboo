@@ -32,6 +32,48 @@ fn custom_root_certificate() {
 }
 
 #[test]
+fn close_delimited_response_requires_tls_close_notify() {
+    let cert = TestCert::generate("bangboo.test");
+    let addr = cert.serve_close_delimited(false);
+    let ca = bangboo::Certificate::from_pem(&cert.ca_pem).unwrap();
+    let client = client_for(&cert, addr)
+        .no_proxy()
+        .add_root_certificate(ca)
+        .build()
+        .unwrap();
+
+    let err = client
+        .get(url_for(&cert, addr))
+        .send()
+        .unwrap()
+        .text()
+        .unwrap_err();
+    assert!(err.is_request(), "unexpected error: {err:?}");
+}
+
+#[test]
+fn close_delimited_response_accepts_tls_close_notify() {
+    let cert = TestCert::generate("bangboo.test");
+    let addr = cert.serve_close_delimited(true);
+    let ca = bangboo::Certificate::from_pem(&cert.ca_pem).unwrap();
+    let client = client_for(&cert, addr)
+        .no_proxy()
+        .add_root_certificate(ca)
+        .build()
+        .unwrap();
+
+    assert_eq!(
+        client
+            .get(url_for(&cert, addr))
+            .send()
+            .unwrap()
+            .text()
+            .unwrap(),
+        "partial body"
+    );
+}
+
+#[test]
 fn unknown_root_is_rejected() {
     let cert = TestCert::generate("bangboo.test");
     let addr = cert.serve_once("secure");
