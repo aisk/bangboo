@@ -90,14 +90,15 @@ impl TestCert {
             let (mut sock, _) = listener.accept().unwrap();
             let mut conn = rustls::ServerConnection::new(config).unwrap();
             conn.complete_io(&mut sock).unwrap();
-            let mut tls = rustls::Stream::new(&mut conn, &mut sock);
-            let mut buf = [0u8; 4096];
-            let _ = tls.read(&mut buf);
-            tls.write_all(b"HTTP/1.1 200 OK\r\nconnection: close\r\n\r\npartial body")
-                .unwrap();
-            tls.flush().unwrap();
+            {
+                let mut tls = rustls::Stream::new(&mut conn, &mut sock);
+                let mut buf = [0u8; 4096];
+                let _ = tls.read(&mut buf);
+                tls.write_all(b"HTTP/1.1 200 OK\r\nconnection: close\r\n\r\npartial body")
+                    .unwrap();
+                tls.flush().unwrap();
+            }
             if close_notify {
-                drop(tls);
                 conn.send_close_notify();
                 conn.complete_io(&mut sock).unwrap();
             }
