@@ -1,6 +1,6 @@
 //! # bangboo
 //!
-//! A truly synchronous HTTP/1.1 client, with an API modeled after
+//! A truly synchronous HTTP client, with an API modeled after
 //! [`reqwest::blocking`](https://docs.rs/reqwest/latest/reqwest/blocking/).
 //!
 //! Unlike `reqwest::blocking` (which spins up a tokio runtime on a

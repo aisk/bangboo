@@ -2,7 +2,7 @@
 
 ![Bangboo](https://cdn.oneesports.gg/wp-content/uploads/2024/07/ZenlessZoneZero_TheBangboo.jpg)
 
-A truly synchronous HTTP/1.1 client for Rust, with an API modeled after `reqwest::blocking`. Unlike `reqwest::blocking` (which runs a tokio runtime on a background thread), bangboo is built directly on `std::net::TcpStream`, with no async runtime anywhere.
+A truly synchronous HTTP client for Rust, with an API modeled after `reqwest::blocking`. Unlike `reqwest::blocking` (which runs a tokio runtime on a background thread), bangboo is built directly on `std::net::TcpStream`, with no async runtime anywhere.
 
 ## Installation
 

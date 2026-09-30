@@ -2,7 +2,7 @@
 name = "bangboo"
 version = "0.2.2"
 edition = "2024"
-description = "A truly synchronous HTTP/1.1 client with a reqwest-like blocking API"
+description = "A truly synchronous HTTP client with a reqwest-like blocking API"
 license = "MIT"
 repository = "https://github.com/aisk/bangboo"
 readme = "README.md"
